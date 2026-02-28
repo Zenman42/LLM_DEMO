@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "position-tracker"
+name = "llm-demo"
 version = "2.0.0"
-description = "SaaS SERP position tracker with PostgreSQL + ClickHouse"
+description = "LLM Tracker Demo — auth-free version for frontend redesign with Lovable"
 requires-python = ">=3.11"
 dependencies = [
     # Web framework

@@ -24,11 +24,63 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
+def ensure_demo_user() -> None:
+    """Create demo tenant + user if they don't exist yet (idempotent)."""
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.orm import Session
+
+    from app.core.security import hash_password
+    from app.models.tenant import Tenant
+    from app.models.user import User
+
+    sync_engine = create_engine(settings.postgres_url_sync)
+    try:
+        with Session(sync_engine) as session:
+            user = session.execute(
+                select(User).where(User.email == settings.demo_user_email)
+            ).scalar_one_or_none()
+
+            if user:
+                logger.info("Demo user already exists: %s", settings.demo_user_email)
+                return
+
+            tenant = Tenant(
+                name="Demo",
+                slug="demo",
+                plan="enterprise",
+                max_projects=100,
+                max_keywords=10000,
+                max_llm_queries=1000,
+            )
+            session.add(tenant)
+            session.flush()
+
+            user = User(
+                tenant_id=tenant.id,
+                email=settings.demo_user_email,
+                password_hash=hash_password("demo-not-used"),
+                role="owner",
+            )
+            session.add(user)
+            try:
+                session.commit()
+                logger.info("Demo tenant + user created: %s", settings.demo_user_email)
+            except IntegrityError:
+                session.rollback()
+                logger.info("Demo user created by another worker")
+    finally:
+        sync_engine.dispose()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     validate_settings_for_production()
-    logger.info("Starting Position Tracker SaaS...")
+    logger.info("Starting LLM Tracker Demo...")
+
+    # Auto-create demo user if needed
+    ensure_demo_user()
 
     # Init ClickHouse schema (non-blocking — CH is optional)
     try:
@@ -42,7 +94,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     close_ch_client()
     await engine.dispose()
-    logger.info("Position Tracker SaaS shut down")
+    logger.info("LLM Tracker Demo shut down")
 
 
 app = FastAPI(

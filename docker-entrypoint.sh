@@ -126,4 +126,39 @@ with e.begin() as c:
 
 echo "Migrations complete."
 
+# Ensure demo tenant + user exists
+echo "Ensuring demo user exists..."
+python -c "
+from app.core.config import settings
+from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+from app.models.tenant import Tenant
+from app.models.user import User
+from app.core.security import hash_password
+
+e = create_engine(settings.postgres_url_sync)
+with Session(e) as session:
+    user = session.execute(
+        select(User).where(User.email == settings.demo_user_email)
+    ).scalar_one_or_none()
+    if user:
+        print(f'Demo user already exists: {settings.demo_user_email}')
+    else:
+        tenant = Tenant(name='Demo', slug='demo', plan='enterprise',
+                        max_projects=100, max_keywords=10000, max_llm_queries=1000)
+        session.add(tenant)
+        session.flush()
+        user = User(tenant_id=tenant.id, email=settings.demo_user_email,
+                    password_hash=hash_password('demo-not-used'), role='owner')
+        session.add(user)
+        try:
+            session.commit()
+            print(f'Demo tenant + user created: {settings.demo_user_email}')
+        except IntegrityError:
+            session.rollback()
+            print('Demo user created by another process')
+e.dispose()
+"
+
 exec supervisord -c /app/supervisord.conf

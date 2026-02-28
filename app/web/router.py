@@ -1,20 +1,15 @@
 """Web UI routes — serves Jinja2 templates.
 
-All data is loaded client-side via fetch() to /api/v1/ with JWT from localStorage.
-These routes only serve the HTML shell.
-
-In demo mode, project pages pre-render data server-side so that tools
-like Lovable (which don't execute JS) can see actual content.
+Demo mode is always on. Project pages pre-render data server-side so that
+tools like Lovable (which don't execute JS) can see actual content.
 """
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app.core.config import settings
-
 templates = Jinja2Templates(directory="templates")
-templates.env.globals["demo_mode"] = settings.demo_mode
+templates.env.globals["demo_mode"] = True
 
 web_router = APIRouter(tags=["web"])
 
@@ -139,16 +134,13 @@ async def _demo_dashboard_context() -> dict:
 
 @web_router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    if settings.demo_mode:
-        return RedirectResponse(url="/", status_code=302)
-    return templates.TemplateResponse(request, "login.html")
+    """Redirect to dashboard — no login needed."""
+    return RedirectResponse(url="/", status_code=302)
 
 
 @web_router.get("/", response_class=HTMLResponse)
 async def dashboard_page(request: Request):
-    ctx: dict = {}
-    if settings.demo_mode:
-        ctx = await _demo_dashboard_context()
+    ctx = await _demo_dashboard_context()
     return templates.TemplateResponse(request, "dashboard.html", ctx)
 
 
@@ -160,8 +152,7 @@ async def onboarding_page(request: Request):
 @web_router.get("/project/{project_id}", response_class=HTMLResponse)
 async def project_page(request: Request, project_id: int):
     ctx: dict = {"project_id": project_id}
-    if settings.demo_mode:
-        ctx.update(await _demo_project_context(project_id))
+    ctx.update(await _demo_project_context(project_id))
     return templates.TemplateResponse(request, "project.html", ctx)
 
 

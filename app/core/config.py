@@ -64,9 +64,9 @@ class Settings(BaseSettings):
     # CORS
     allowed_origins: str = "*"  # comma-separated, e.g. "https://app.example.com,https://admin.example.com"
 
-    # Demo mode — bypass auth entirely, all pages accessible without login
-    demo_mode: bool = False
-    demo_user_email: str = ""
+    # Demo mode — always on, auth bypassed, all pages accessible without login
+    demo_mode: bool = True
+    demo_user_email: str = "demo@llmtracker.com"
 
     # Logging
     log_level: str = "INFO"
@@ -83,11 +83,12 @@ def validate_settings_for_production() -> None:
     """Validate critical settings. Called on startup in non-test environments."""
     errors: list[str] = []
 
-    if settings.jwt_secret_key in ("change-this-to-a-random-string", ""):
-        errors.append("JWT_SECRET_KEY must be set to a secure random value")
+    if not settings.demo_mode:
+        if settings.jwt_secret_key in ("change-this-to-a-random-string", ""):
+            errors.append("JWT_SECRET_KEY must be set to a secure random value")
 
-    if len(settings.jwt_secret_key) < 32:
-        errors.append("JWT_SECRET_KEY must be at least 32 characters")
+        if len(settings.jwt_secret_key) < 32:
+            errors.append("JWT_SECRET_KEY must be at least 32 characters")
 
     if not settings.fernet_key:
         errors.append(
