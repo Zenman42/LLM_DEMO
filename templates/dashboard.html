@@ -16,9 +16,28 @@
             </div></div>
             <div class="card-domain">{{ p.domain }}</div>
             <div class="card-stats">
-                <div class="stat"><span class="stat-value">—</span><span class="stat-label">Keywords</span></div>
+                {% if p.track_llm %}
+                <div class="stat">
+                    <span class="stat-value">{{ p.llm_queries }}</span>
+                    <span class="stat-label">Queries</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value {% if p.llm_mention_rate > 50 %}change-up{% elif p.llm_mention_rate > 0 %}change-none{% else %}muted{% endif %}">{{ p.llm_mention_rate }}%</span>
+                    <span class="stat-label">Mention Rate</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value">{{ p.llm_total_checks }}</span>
+                    <span class="stat-label">Checks (30d)</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-value">{{ p.llm_entities }}</span>
+                    <span class="stat-label">Entities</span>
+                </div>
+                {% else %}
+                <div class="stat"><span class="stat-value muted">—</span><span class="stat-label">Keywords</span></div>
                 <div class="stat"><span class="stat-value muted">—</span><span class="stat-label">Avg Position</span></div>
                 <div class="stat"><span class="stat-value change-none">—</span><span class="stat-label">Trend (7d)</span></div>
+                {% endif %}
             </div>
         </a>
         {% endfor %}

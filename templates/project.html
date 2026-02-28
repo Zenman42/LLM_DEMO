@@ -14,47 +14,204 @@
     <div style="display:flex;gap:8px;align-items:center;">
         <button class="btn btn-primary">Collect SERP</button>
         {% if demo_project.track_llm %}<button class="btn btn-primary" style="background:#805ad5;">Collect LLM</button>{% endif %}
-        <a href="/project/{{ demo_project.id }}/settings" class="btn" style="padding:6px 10px;font-size:16px;" title="Project Settings">⚙</a>
+        <a href="/project/{{ demo_project.id }}/settings" class="btn" style="padding:6px 10px;font-size:16px;" title="Project Settings">&#9881;</a>
     </div></div>
 
     {% if demo_project.track_llm %}
     <div class="main-tabs-bar">
-        <button class="main-tab-btn active">LLM Visibility</button>
-        <button class="main-tab-btn">SERP: POS + AI</button>
+        <button class="main-tab-btn active" onclick="switchProjectTab('llm')">LLM Visibility</button>
+        <button class="main-tab-btn" onclick="switchProjectTab('serp')">SERP: POS + AI</button>
     </div>
     {% endif %}
 
-    {# Keywords Table #}
-    {% if demo_keywords %}
-    <div class="engine-section">
-        <h2 class="engine-title {{ 'google-title' if demo_engine == 'google' else 'yandex-title' }}">Keywords</h2>
-        <div class="table-wrapper"><table class="keywords-table"><thead><tr>
-            <th>Keyword</th>
-            <th>Position</th>
-            <th>Change</th>
-            <th>Found URL</th>
-            <th>Match</th>
-            <th>SERP</th>
-        </tr></thead><tbody>
-        {% for kw in demo_keywords %}
-        <tr>
-            <td><code>{{ kw.keyword }}</code></td>
-            <td>{% if kw.position and kw.position > 0 %}<span class="pos-badge {{ 'top3' if kw.position <= 3 else 'good' if kw.position <= 10 else 'medium' if kw.position <= 30 else 'poor' }}">{{ kw.position }}</span>{% else %}<span class="muted">50+</span>{% endif %}</td>
-            <td>{% if kw.change is not none %}{% if kw.change > 0 %}<span class="change-up">+{{ kw.change }}</span>{% elif kw.change < 0 %}<span class="change-down">{{ kw.change }}</span>{% else %}<span class="change-none">—</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
-            <td class="url-cell" title="{{ kw.found_url or '' }}">{{ (kw.found_url or '—')[:60] }}{% if kw.found_url and kw.found_url|length > 60 %}...{% endif %}</td>
-            <td>{% if kw.match == true %}<span class="match-ok">OK</span>{% elif kw.match == false %}<span class="match-no">X</span>{% else %}<span class="muted">—</span>{% endif %}</td>
-            <td><button class="btn btn-sm btn-serp">TOP</button></td>
-        </tr>
-        {% endfor %}
-        </tbody></table></div>
+    {# ================================================================
+       LLM VISIBILITY TAB
+       ================================================================ #}
+    {% if demo_project.track_llm and llm_stats %}
+    <div id="tab-llm">
+        {# --- Navigation links --- #}
+        <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
+            <a href="/project/{{ demo_project.id }}/llm-dashboard" class="btn btn-sm" style="font-size:0.82rem;">Full LLM Dashboard</a>
+            <a href="/project/{{ demo_project.id }}/prompts" class="btn btn-sm" style="font-size:0.82rem;">Manage Prompts</a>
+            <a href="/project/{{ demo_project.id }}/competitors" class="btn btn-sm" style="font-size:0.82rem;">Manage Competitors</a>
+        </div>
+
+        {# --- Stats Cards --- #}
+        <div class="llm-stats-grid">
+            <div class="kpi-card">
+                <div class="kpi-card__value" style="color:var(--accent);">{{ llm_stats.mention_rate }}%</div>
+                <div class="kpi-card__label">Mention Rate</div>
+                <div class="kpi-card__sublabel">Brand mentioned in LLM responses</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-card__value" style="color:#34d399;">{{ llm_stats.sov }}%</div>
+                <div class="kpi-card__label">Share of Voice</div>
+                <div class="kpi-card__sublabel">Brand vs all mentions</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-card__value">{{ llm_stats.total_checks }}</div>
+                <div class="kpi-card__label">Total Checks</div>
+                <div class="kpi-card__sublabel">{{ llm_stats.total_queries }} queries &times; providers (30d)</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-card__value" style="color:#fb923c;">${{ llm_stats.total_cost }}</div>
+                <div class="kpi-card__label">Total Cost</div>
+                <div class="kpi-card__sublabel">LLM API usage (30d)</div>
+            </div>
+        </div>
+
+        {# --- Provider Breakdown --- #}
+        {% if llm_provider_rates %}
+        <div class="card" style="margin-top:16px;">
+            <h3 style="margin-bottom:12px;">Mention Rate by Provider</h3>
+            <div class="provider-bars">
+                {% for provider, rate in llm_provider_rates.items() %}
+                <div class="provider-bar-row">
+                    <span class="provider-name"><span class="provider-pill provider-pill--{{ provider }}">{{ provider }}</span></span>
+                    <div class="bar-container"><div class="bar-fill" style="width:{{ rate }}%;background:var(--accent);"></div></div>
+                    <span class="bar-value">{{ rate }}%</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {# --- Competitor SOV --- #}
+        {% if llm_competitor_sov %}
+        <div class="card" style="margin-top:16px;">
+            <h3 style="margin-bottom:12px;">Share of Voice by Brand</h3>
+            <div class="provider-bars">
+                <div class="provider-bar-row">
+                    <span class="provider-name" style="color:var(--accent);font-weight:600;">{{ demo_project.brand_name or 'Your Brand' }}</span>
+                    <div class="bar-container"><div class="bar-fill" style="width:{{ llm_stats.sov }}%;background:var(--accent);"></div></div>
+                    <span class="bar-value">{{ llm_stats.sov }}%</span>
+                </div>
+                {% for comp, sov_pct in llm_competitor_sov.items() %}
+                <div class="provider-bar-row">
+                    <span class="provider-name">{{ comp }}</span>
+                    <div class="bar-container"><div class="bar-fill" style="width:{{ sov_pct }}%;background:#f87171;"></div></div>
+                    <span class="bar-value">{{ sov_pct }}%</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {# --- Recent Responses Table --- #}
+        {% if llm_responses %}
+        <div class="card" style="margin-top:16px;">
+            <h3 style="margin-bottom:12px;">Recent LLM Responses</h3>
+            <div class="table-wrapper"><table class="keywords-table"><thead><tr>
+                <th>Date</th>
+                <th>Provider</th>
+                <th>Model</th>
+                <th>Query</th>
+                <th>Brand</th>
+                <th>Type</th>
+                <th>Sentiment</th>
+                <th>Cost</th>
+            </tr></thead><tbody>
+            {% for r in llm_responses %}
+            <tr>
+                <td style="white-space:nowrap;">{{ r.date }}</td>
+                <td><span class="provider-pill provider-pill--{{ r.provider }}">{{ r.provider }}</span></td>
+                <td style="font-size:0.8rem;">{{ r.model }}</td>
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ r.query_text }}">{{ r.query_text }}</td>
+                <td>{% if r.brand_mentioned %}<span style="color:#34d399;">&#10003;</span>{% else %}<span class="muted">-</span>{% endif %}</td>
+                <td><span class="mention-badge mention-badge--{{ r.mention_type }}">{{ r.mention_type }}</span></td>
+                <td>{% if r.sentiment %}<span class="mention-badge mention-badge--{{ r.sentiment }}">{{ r.sentiment }}</span>{% else %}<span class="muted">-</span>{% endif %}</td>
+                <td>${{ r.cost }}</td>
+            </tr>
+            {% endfor %}
+            </tbody></table></div>
+        </div>
+        {% endif %}
+
+        {# --- Discovered Entities --- #}
+        {% if llm_entities %}
+        <div class="card" style="margin-top:16px;">
+            <h3 style="margin-bottom:12px;">Discovered Entities</h3>
+            <div class="table-wrapper"><table class="keywords-table"><thead><tr>
+                <th>Entity</th>
+                <th>Mentions</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>First Seen</th>
+                <th>Last Seen</th>
+            </tr></thead><tbody>
+            {% for e in llm_entities %}
+            <tr>
+                <td><strong>{{ e.name }}</strong></td>
+                <td>{{ e.count }}</td>
+                <td>{% if e.type %}<span class="badge">{{ e.type }}</span>{% else %}<span class="muted">-</span>{% endif %}</td>
+                <td><span class="badge {% if e.status == 'confirmed' %}badge-active{% elif e.status == 'promoted' %}badge-llm{% endif %}">{{ e.status }}</span></td>
+                <td>{{ e.first_seen }}</td>
+                <td>{{ e.last_seen }}</td>
+            </tr>
+            {% endfor %}
+            </tbody></table></div>
+        </div>
+        {% endif %}
     </div>
-    {% else %}
-    <div class="empty-state"><p>No keywords tracked. <a href="/settings">Add keywords</a> in settings.</p></div>
     {% endif %}
+
+    {# ================================================================
+       SERP KEYWORDS TAB
+       ================================================================ #}
+    <div id="tab-serp" {% if demo_project.track_llm %}style="display:none;"{% endif %}>
+        {% if demo_keywords %}
+        <div class="engine-section">
+            <h2 class="engine-title {{ 'google-title' if demo_engine == 'google' else 'yandex-title' }}">Keywords</h2>
+            <div class="table-wrapper"><table class="keywords-table"><thead><tr>
+                <th>Keyword</th>
+                <th>Position</th>
+                <th>Change</th>
+                <th>Found URL</th>
+                <th>Match</th>
+                <th>SERP</th>
+            </tr></thead><tbody>
+            {% for kw in demo_keywords %}
+            <tr>
+                <td><code>{{ kw.keyword }}</code></td>
+                <td>{% if kw.position and kw.position > 0 %}<span class="pos-badge {{ 'top3' if kw.position <= 3 else 'good' if kw.position <= 10 else 'medium' if kw.position <= 30 else 'poor' }}">{{ kw.position }}</span>{% else %}<span class="muted">50+</span>{% endif %}</td>
+                <td>{% if kw.change is not none %}{% if kw.change > 0 %}<span class="change-up">+{{ kw.change }}</span>{% elif kw.change < 0 %}<span class="change-down">{{ kw.change }}</span>{% else %}<span class="change-none">—</span>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
+                <td class="url-cell" title="{{ kw.found_url or '' }}">{{ (kw.found_url or '—')[:60] }}{% if kw.found_url and kw.found_url|length > 60 %}...{% endif %}</td>
+                <td>{% if kw.match == true %}<span class="match-ok">OK</span>{% elif kw.match == false %}<span class="match-no">X</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+                <td><button class="btn btn-sm btn-serp">TOP</button></td>
+            </tr>
+            {% endfor %}
+            </tbody></table></div>
+        </div>
+        {% else %}
+        <div class="empty-state"><p>No keywords tracked. <a href="/settings">Add keywords</a> in settings.</p></div>
+        {% endif %}
+    </div>
 </div>
 {% else %}
 <div id="projectContent">
     <div class="empty-state"><p>Project not found.</p></div>
 </div>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+function switchProjectTab(tab) {
+    var llm = document.getElementById('tab-llm');
+    var serp = document.getElementById('tab-serp');
+    var btns = document.querySelectorAll('.main-tab-btn');
+
+    if (tab === 'llm' && llm) {
+        llm.style.display = '';
+        if (serp) serp.style.display = 'none';
+        if (btns[0]) btns[0].classList.add('active');
+        if (btns[1]) btns[1].classList.remove('active');
+    } else if (tab === 'serp' && serp) {
+        if (llm) llm.style.display = 'none';
+        serp.style.display = '';
+        if (btns[0]) btns[0].classList.remove('active');
+        if (btns[1]) btns[1].classList.add('active');
+    }
+}
+</script>
 {% endblock %}
