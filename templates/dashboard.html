@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — LLM Tracker{% endblock %}
+{% block page_title %}Dashboard{% endblock %}
+
+{% block content %}
+{% if demo_mode and demo_projects is defined %}
+{# ---- Server-side rendered content for tools that don't execute JS ---- #}
+<div id="dashboardContent">
+    {% if demo_projects %}
+    <div class="project-grid">
+        {% for p in demo_projects %}
+        <a href="/project/{{ p.id }}" class="project-card">
+            <div class="card-header"><h3>{{ p.name }}</h3>
+            <div class="card-badges">
+                {% if p.track_llm %}<span class="badge badge-llm">LLM</span>{% endif %}
+                <span class="badge badge-active">Active</span>
+            </div></div>
+            <div class="card-domain">{{ p.domain }}</div>
+            <div class="card-stats">
+                <div class="stat"><span class="stat-value">—</span><span class="stat-label">Keywords</span></div>
+                <div class="stat"><span class="stat-value muted">—</span><span class="stat-label">Avg Position</span></div>
+                <div class="stat"><span class="stat-value change-none">—</span><span class="stat-label">Trend (7d)</span></div>
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state"><p>No projects yet. <a href="/project/new">Create your first LLM project</a> or <a href="/settings">add a SERP project</a> to get started.</p></div>
+    {% endif %}
+</div>
+{% else %}
+<div id="dashboardContent">
+    <div class="empty-state"><p>Loading...</p></div>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if not demo_mode %}
+<script>
+var _dashboardLoaded = false;
+async function loadDashboard() {
+  if (_dashboardLoaded) return;
+  var container = document.getElementById('dashboardContent');
+  try {
+    if (!container) return;
+    var resp = await apiFetch('/api/v1/dashboard/');
+    if (!resp) return;
+    if (!resp.ok) throw new Error('Server error ' + resp.status);
+    var data = await resp.json();
+    _dashboardLoaded = true;
+
+    if (!data.projects || data.projects.length === 0) {
+        container.innerHTML = '<div class="empty-state"><p>No projects yet. <a href="/project/new">Create your first LLM project</a> or <a href="/settings">add a SERP project</a> to get started.</p></div>';
+        return;
+    }
+
+    var html = '<div class="project-grid">';
+    data.projects.forEach(function(item) {
+        var avgPos = item.avg_position;
+        var trend = item.trend;
+        var posClass = '';
+        if (avgPos) {
+            posClass = avgPos <= 10 ? 'good' : avgPos <= 30 ? 'medium' : 'poor';
+        }
+        var trendClass = '';
+        var trendText = '\u2014';
+        if (trend !== null && trend !== undefined) {
+            if (trend > 0) { trendClass = 'change-up'; trendText = '+' + trend; }
+            else if (trend < 0) { trendClass = 'change-down'; trendText = '' + trend; }
+            else { trendClass = 'change-none'; trendText = '\u2014'; }
+        }
+
+        // Mention rate formatting
+        var mentionRate = item.mention_rate;
+        var mentionClass = '';
+        var mentionText = '\u2014';
+        if (mentionRate !== null && mentionRate !== undefined) {
+            var pct = Math.round(mentionRate * 100);
+            mentionText = pct + '%';
+            mentionClass = pct >= 50 ? 'good' : pct >= 20 ? 'medium' : 'poor';
+        }
+
+        html += '<a href="/project/' + item.id + '" class="project-card">';
+        html += '<div class="card-header"><h3>' + item.name + '</h3>';
+        html += '<div class="card-badges">';
+        if (item.track_llm) {
+            html += '<span class="badge badge-llm">LLM</span>';
+        }
+        html += '<span class="badge ' + (item.is_active ? 'badge-active' : 'badge-inactive') + '">' + (item.is_active ? 'Active' : 'Inactive') + '</span>';
+        html += '</div></div>';
+        html += '<div class="card-domain">' + (item.domain || item.brand_name || '') + '</div>';
+
+        html += '<div class="card-stats">';
+
+        // SERP stats row
+        html += '<div class="stat"><span class="stat-value">' + (item.keyword_count || 0) + '</span><span class="stat-label">Keywords</span></div>';
+        html += '<div class="stat">';
+        if (avgPos) {
+            html += '<span class="stat-value pos-badge ' + posClass + '">' + Math.round(avgPos) + '</span>';
+        } else {
+            html += '<span class="stat-value muted">\u2014</span>';
+        }
+        html += '<span class="stat-label">Avg Position</span></div>';
+        html += '<div class="stat"><span class="stat-value ' + trendClass + '">' + trendText + '</span><span class="stat-label">Trend (7d)</span></div>';
+
+        // LLM stats (only if track_llm enabled)
+        if (item.track_llm) {
+            html += '<div class="stat"><span class="stat-value">' + (item.llm_query_count || 0) + '</span><span class="stat-label">LLM Queries</span></div>';
+            html += '<div class="stat"><span class="stat-value pos-badge ' + mentionClass + '">' + mentionText + '</span><span class="stat-label">Mention Rate</span></div>';
+            html += '<div class="stat"><span class="stat-value">' + (item.total_llm_checks || 0) + '</span><span class="stat-label">LLM Checks</span></div>';
+        }
+
+        html += '</div>';
+
+        // Footer with collection dates
+        var footerParts = [];
+        if (item.last_collected) {
+            footerParts.push('SERP: ' + item.last_collected.split('T')[0]);
+        }
+        if (item.last_llm_collected) {
+            footerParts.push('LLM: ' + item.last_llm_collected.split('T')[0]);
+        }
+        if (footerParts.length > 0) {
+            html += '<div class="card-footer">Last collected: ' + footerParts.join(' | ') + '</div>';
+        }
+        html += '</a>';
+    });
+    html += '</div>';
+    container.innerHTML = html;
+  } catch (e) {
+    console.error('Dashboard load error:', e);
+    if (container) container.innerHTML = '<div class="empty-state"><p>Failed to load dashboard. <a href="/" onclick="location.reload(); return false;">Try again</a></p></div>';
+  }
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', loadDashboard);
+} else {
+    loadDashboard();
+}
+window.addEventListener('pageshow', function(event) {
+    if (event.persisted) { _dashboardLoaded = false; loadDashboard(); }
+});
+window.addEventListener('load', function() {
+    if (!_dashboardLoaded) loadDashboard();
+});
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}API Keys — LLM Tracker{% endblock %}
+{% block page_title %}API Keys{% endblock %}
+
+{% block content %}
+<!-- Create Form -->
+<div class="card">
+    <h2>Create API Key</h2>
+    <form onsubmit="createKey(event)" class="form-grid">
+        <div class="form-group">
+            <label>Key Name</label>
+            <input type="text" id="keyName" required placeholder="e.g. CI/CD Integration">
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Create Key</button>
+        </div>
+    </form>
+</div>
+
+<!-- New Key Display -->
+<div class="card card-highlight" id="newKeyCard" style="display:none;">
+    <h2>New API Key Created</h2>
+    <p class="text-danger text-sm" style="font-weight:600;">
+        Copy this key now. It will not be shown again!
+    </p>
+    <div class="code-display">
+        <code id="newKeyValue"></code>
+        <button class="btn btn-sm btn-primary" onclick="copyKey()">Copy</button>
+    </div>
+</div>
+
+<!-- Keys Table -->
+<div class="card">
+    <h2>Existing Keys</h2>
+    <div id="keysTable">Loading...</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadKeys() {
+    var resp = await apiFetch('/api/v1/api-keys/');
+    if (!resp) return;
+    var data = await resp.json();
+    renderKeysTable(data.items);
+}
+
+function renderKeysTable(keys) {
+    var container = document.getElementById('keysTable');
+    if (!keys || keys.length === 0) {
+        container.innerHTML = '<p class="muted">No API keys yet.</p>';
+        return;
+    }
+
+    var html = '<div class="table-wrapper"><table class="keywords-table"><thead><tr>';
+    html += '<th>Name</th><th>Key Prefix</th><th>Last Used</th><th>Created</th><th>Actions</th>';
+    html += '</tr></thead><tbody>';
+
+    keys.forEach(function(k) {
+        html += '<tr>';
+        html += '<td>' + (k.name || '\u2014') + '</td>';
+        html += '<td><code>' + k.key_prefix + '</code></td>';
+        html += '<td>' + (k.last_used_at ? k.last_used_at.split('T')[0] : 'Never') + '</td>';
+        html += '<td>' + (k.created_at ? k.created_at.split('T')[0] : '\u2014') + '</td>';
+        html += '<td><button class="btn btn-sm btn-danger" onclick="deleteKey(\'' + k.id + '\', \'' + (k.name || 'this key') + '\')">Delete</button></td>';
+        html += '</tr>';
+    });
+
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+}
+
+async function createKey(e) {
+    e.preventDefault();
+    var name = document.getElementById('keyName').value;
+    var resp = await apiFetch('/api/v1/api-keys/', {
+        method: 'POST',
+        body: JSON.stringify({ name: name }),
+    });
+    if (resp && resp.ok) {
+        var data = await resp.json();
+        document.getElementById('newKeyValue').textContent = data.key;
+        document.getElementById('newKeyCard').style.display = '';
+        document.getElementById('keyName').value = '';
+        showFlash('API key created');
+        loadKeys();
+    } else if (resp) {
+        var err = await resp.json();
+        showFlash(err.detail || 'Failed to create key', 'error');
+    }
+}
+
+function copyKey() {
+    var key = document.getElementById('newKeyValue').textContent;
+    navigator.clipboard.writeText(key).then(function() {
+        showFlash('Key copied to clipboard');
+    });
+}
+
+async function deleteKey(keyId, name) {
+    if (!confirm('Delete API key "' + name + '"? This cannot be undone.')) return;
+    var resp = await apiFetch('/api/v1/api-keys/' + keyId, { method: 'DELETE' });
+    if (resp && resp.ok) {
+        showFlash('API key deleted');
+        loadKeys();
+    } else if (resp) {
+        var err = await resp.json();
+        showFlash(err.detail || 'Failed to delete', 'error');
+    }
+}
+
+document.addEventListener('DOMContentLoaded', loadKeys);
+</script>
+{% endblock %}

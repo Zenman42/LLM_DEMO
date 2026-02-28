@@ -1,0 +1,1245 @@
+{% extends "base.html" %}
+{% block title %}Prompts — LLM Tracker{% endblock %}
+{% block page_title %}Prompt Management{% endblock %}
+
+{% block content %}
+<div id="promptsApp">
+    <div class="empty-state"><p>Loading...</p></div>
+</div>
+
+<!-- Edit Modal -->
+<div id="editModal" class="serp-modal-overlay" style="display:none;" onclick="if(event.target===this)closeEditModal()">
+    <div class="serp-modal" style="max-width:640px;">
+        <div class="serp-modal-header">
+            <h3 id="editModalTitle">Edit Prompt</h3>
+            <button class="serp-modal-close" onclick="closeEditModal()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div class="serp-modal-body" style="padding:24px;" id="editModalBody"></div>
+    </div>
+</div>
+
+<!-- Add Modal -->
+<div id="addModal" class="serp-modal-overlay" style="display:none;" onclick="if(event.target===this)closeAddModal()">
+    <div class="serp-modal" style="max-width:640px;">
+        <div class="serp-modal-header">
+            <h3>Add New Prompt</h3>
+            <button class="serp-modal-close" onclick="closeAddModal()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div class="serp-modal-body" style="padding:24px;" id="addModalBody"></div>
+    </div>
+</div>
+
+<!-- Scenario Create/Edit Modal -->
+<div id="scenarioModal" class="serp-modal-overlay" style="display:none;" onclick="if(event.target===this)closeScenarioModal()">
+    <div class="serp-modal" style="max-width:560px;">
+        <div class="serp-modal-header">
+            <h3 id="scenarioModalTitle">New Scenario</h3>
+            <button class="serp-modal-close" onclick="closeScenarioModal()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div class="serp-modal-body" style="padding:24px;" id="scenarioModalBody"></div>
+    </div>
+</div>
+
+<!-- Move to Scenario Modal -->
+<div id="moveModal" class="serp-modal-overlay" style="display:none;" onclick="if(event.target===this)closeMoveModal()">
+    <div class="serp-modal" style="max-width:400px;">
+        <div class="serp-modal-header">
+            <h3>Move to Scenario</h3>
+            <button class="serp-modal-close" onclick="closeMoveModal()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div class="serp-modal-body" style="padding:24px;" id="moveModalBody"></div>
+    </div>
+</div>
+
+<!-- Suggest Scenarios Modal -->
+<div id="suggestModal" class="serp-modal-overlay" style="display:none;" onclick="if(event.target===this)closeSuggestModal()">
+    <div class="serp-modal" style="max-width:560px;">
+        <div class="serp-modal-header">
+            <h3>Suggested Scenarios</h3>
+            <button class="serp-modal-close" onclick="closeSuggestModal()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div class="serp-modal-body" style="padding:24px;" id="suggestModalBody"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var PROJECT_ID = {{ project_id }};
+var projectData = null;
+var stats = null;
+var queries = [];
+var totalItems = 0;
+var currentOffset = 0;
+var currentLimit = 50;
+var selectedIds = new Set();
+var selectAllChecked = false;
+
+var filterClass = '';
+var filterSubtype = '';
+var filterActive = '';
+var filterSearch = '';
+var filterScenario = '';
+var sortBy = 'created_at';
+var sortDir = 'desc';
+var searchTimer = null;
+
+/* Scenario data */
+var scenarios = [];
+var uncategorizedCount = 0;
+
+/* Generation state */
+var genState = null; // {scenarioName, prompts: [], selectedSet: Set, generating: false}
+
+/* Class → Subtype mapping */
+var CLASS_SUBTYPES = {
+    thematic: ['category','attribute','scenario','event'],
+    branded:  ['reputation','comparison','negative','fact_check'],
+    custom:   []
+};
+var ALL_SUBTYPES = CLASS_SUBTYPES.thematic.concat(CLASS_SUBTYPES.branded);
+
+function getCustomSubtypes() {
+    if (!stats || !stats.by_subtype) return [];
+    return Object.keys(stats.by_subtype).filter(function(s) {
+        return s !== 'unclassified' && ALL_SUBTYPES.indexOf(s) === -1;
+    });
+}
+
+function subtypesForClass(cls) {
+    if (!cls) return ALL_SUBTYPES.concat(getCustomSubtypes());
+    if (cls === 'custom') return getCustomSubtypes();
+    return CLASS_SUBTYPES[cls] || [];
+}
+
+document.addEventListener('DOMContentLoaded', loadPage);
+
+async function loadPage() {
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID);
+    if (resp && resp.ok) {
+        projectData = await resp.json();
+        var el = document.querySelector('.page-title');
+        if (el) el.textContent = projectData.name + ' — Prompts';
+    }
+    await Promise.all([loadStats(), loadQueries(), loadScenarios()]);
+    renderApp();
+}
+
+async function loadScenarios() {
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/scenarios');
+    if (resp && resp.ok) {
+        var data = await resp.json();
+        scenarios = data.scenarios || [];
+        uncategorizedCount = data.uncategorized_count || 0;
+    }
+}
+
+async function loadStats() {
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/llm-queries/stats');
+    if (resp && resp.ok) stats = await resp.json();
+}
+
+async function loadQueries() {
+    var p = new URLSearchParams();
+    p.set('offset', currentOffset);
+    p.set('limit', currentLimit);
+    p.set('sort_by', sortBy);
+    p.set('sort_dir', sortDir);
+    if (filterClass) p.set('query_class', filterClass);
+    if (filterSubtype) p.set('query_subtype', filterSubtype);
+    if (filterActive !== '') p.set('is_active', filterActive);
+    if (filterSearch) p.set('search', filterSearch);
+    if (filterScenario) p.set('scenario', filterScenario);
+
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/llm-queries/?' + p.toString());
+    if (resp && resp.ok) {
+        var data = await resp.json();
+        queries = data.items;
+        totalItems = data.total;
+    }
+}
+
+async function refreshList() {
+    await loadQueries();
+    renderApp();
+}
+
+async function refreshAll() {
+    await Promise.all([loadStats(), loadQueries(), loadScenarios()]);
+    renderApp();
+}
+
+/* ── Scenario helpers ──────────────────────────────────────────── */
+
+function flatScenarios() {
+    var result = [];
+    scenarios.forEach(function(s) {
+        result.push(s);
+        (s.children || []).forEach(function(c) { result.push(c); });
+    });
+    return result;
+}
+
+function findScenario(name) {
+    return flatScenarios().find(function(s) { return s.name === name; }) || null;
+}
+
+function scenarioSelectOptions(selectedName) {
+    var h = '<option value="">— No Scenario —</option>';
+    scenarios.forEach(function(s) {
+        var selected = s.name === selectedName ? ' selected' : '';
+        h += '<option value="'+escAttr(s.name)+'"'+selected+'>'+esc(s.name)+'</option>';
+        (s.children || []).forEach(function(c) {
+            var csel = c.name === selectedName ? ' selected' : '';
+            h += '<option value="'+escAttr(c.name)+'"'+csel+'>&nbsp;&nbsp;\u2192 '+esc(c.name)+'</option>';
+        });
+    });
+    return h;
+}
+
+function parentSelectOptions(selectedParent, excludeName) {
+    var h = '<option value="">— None (top-level) —</option>';
+    scenarios.forEach(function(s) {
+        if (s.name === excludeName) return;
+        if (s.parent) return;
+        var selected = s.name === selectedParent ? ' selected' : '';
+        h += '<option value="'+escAttr(s.name)+'"'+selected+'>'+esc(s.name)+'</option>';
+    });
+    return h;
+}
+
+/* ── Render ─────────────────────────────────────────────── */
+
+function renderApp() {
+    if (!projectData || !stats) return;
+    var h = '';
+
+    /* Context bar */
+    h += '<div class="prompts-context-bar">';
+    h += '<a href="/project/' + PROJECT_ID + '" class="back-link">&larr; Back to Project</a>';
+    h += '<span class="project-name">' + esc(projectData.name) + '</span>';
+    h += '<a href="/project/' + PROJECT_ID + '/llm-dashboard" class="btn btn-sm btn-ghost">LLM Dashboard</a>';
+    h += '</div>';
+
+    /* Stats */
+    h += '<div class="prompts-stats-bar">';
+    h += pill(stats.total, 'Total', '');
+    h += pill(stats.active, 'Active', 'stat-active');
+    h += pill(stats.inactive, 'Inactive', 'stat-inactive');
+    var bc = stats.by_class || {};
+    Object.keys(bc).forEach(function(k) {
+        if (k !== 'unclassified') h += pill(bc[k], k, '');
+    });
+    h += '</div>';
+
+    /* Scenario tabs */
+    h += renderScenarioTabs();
+
+    /* Generation panel */
+    if (genState) {
+        h += renderGenPanel();
+    }
+
+    /* Toolbar */
+    h += '<div class="prompts-toolbar">';
+    h += '<div class="prompts-filters">';
+    h += '<input type="text" class="form-input" id="searchInput" placeholder="Search prompts..." value="' + escAttr(filterSearch) + '" oninput="onSearchInput()">';
+    h += '<select class="form-input" onchange="onFilterClass(this.value)">';
+    h += '<option value="">All Classes</option>';
+    h += '<option value="thematic"' + sel(filterClass,'thematic') + '>Thematic</option>';
+    h += '<option value="branded"' + sel(filterClass,'branded') + '>Branded</option>';
+    h += '<option value="custom"' + sel(filterClass,'custom') + '>Custom</option>';
+    h += '</select>';
+    h += '<select class="form-input" onchange="onFilterSubtype(this.value)">';
+    h += '<option value="">All Subtypes</option>';
+    subtypesForClass(filterClass).forEach(function(s){ h += '<option value="'+s+'"'+sel(filterSubtype,s)+'>'+s+'</option>'; });
+    h += '</select>';
+    h += '<select class="form-input" onchange="onFilterActive(this.value)">';
+    h += '<option value="">All Status</option>';
+    h += '<option value="true"' + sel(filterActive,'true') + '>Active</option>';
+    h += '<option value="false"' + sel(filterActive,'false') + '>Inactive</option>';
+    h += '</select>';
+    h += '</div>';
+    h += '<div class="prompts-actions">';
+    h += '<button class="btn btn-primary" onclick="openAddModal()">+ Add New</button>';
+    h += '</div>';
+    h += '</div>';
+
+    /* Bulk bar */
+    if (selectedIds.size > 0) {
+        h += '<div class="prompts-bulk-bar">';
+        h += '<span><strong>' + selectedIds.size + '</strong> selected</span>';
+        h += '<button class="btn btn-sm" onclick="bulkToggle(true)">Activate</button>';
+        h += '<button class="btn btn-sm" onclick="bulkToggle(false)">Deactivate</button>';
+        h += '<button class="btn btn-sm" onclick="openMoveModal()">Move to Scenario</button>';
+        h += '<button class="btn btn-sm btn-danger" onclick="bulkDelete()">Delete</button>';
+        h += '<button class="btn btn-sm btn-ghost" onclick="clearSelection()">Clear</button>';
+        h += '</div>';
+    }
+
+    /* Table */
+    h += '<div class="table-wrapper"><table class="keywords-table">';
+    h += '<thead><tr>';
+    h += '<th style="width:40px"><input type="checkbox" '+(selectAllChecked?'checked':'')+' onchange="toggleSelectAll(this.checked)"></th>';
+    h += sortTh('Query Text', 'query_text', '');
+    h += sortTh('Class', 'query_class', 'width:100px');
+    h += '<th style="width:110px">Subtype</th>';
+    h += sortTh('Status', 'is_active', 'width:90px');
+    h += '<th style="width:160px">Scenario</th>';
+    h += sortTh('Created', 'created_at', 'width:110px');
+    h += '<th style="width:80px">Actions</th>';
+    h += '</tr></thead><tbody>';
+
+    if (queries.length === 0) {
+        h += '<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-muted);">No prompts found</td></tr>';
+    }
+
+    queries.forEach(function(q) {
+        var isSel = selectedIds.has(q.id);
+        h += '<tr class="'+(isSel?'prompts-table-row-selected':'')+'">';
+        h += '<td><input type="checkbox" '+(isSel?'checked':'')+' onchange="toggleSelect('+q.id+',this.checked)"></td>';
+        var txt = q.query_text.length > 100 ? q.query_text.substring(0,100) + '...' : q.query_text;
+        h += '<td class="prompts-text-cell" title="'+escAttr(q.query_text)+'">' + esc(txt) + '</td>';
+        h += '<td>';
+        if (q.query_class) {
+            var badgeCls = q.query_class === 'branded' ? 'badge-branded' : q.query_class === 'custom' ? 'badge-custom' : 'badge-thematic';
+            h += '<span class="'+badgeCls+'">' + esc(q.query_class) + '</span>';
+        } else { h += '<span style="color:var(--text-muted)">—</span>'; }
+        h += '</td>';
+        h += '<td>';
+        if (q.query_subtype) { h += '<span class="badge-subtype">' + q.query_subtype + '</span>'; }
+        else { h += '<span style="color:var(--text-muted)">—</span>'; }
+        h += '</td>';
+        h += '<td><button class="'+(q.is_active?'badge-active':'badge-inactive')+'" onclick="toggleActive('+q.id+','+(!q.is_active)+')">'+(q.is_active?'Active':'Inactive')+'</button></td>';
+        h += '<td style="font-size:12px;">';
+        if (q.category) {
+            h += '<span class="tag-chip tag-chip--scenario">'+esc(q.category)+'</span>';
+        } else {
+            h += '<span style="color:var(--text-muted)">—</span>';
+        }
+        h += '</td>';
+        h += '<td style="font-size:12px;color:var(--text-muted)">' + fmtDate(q.created_at) + '</td>';
+        h += '<td>';
+        h += '<button class="btn-icon" onclick="openEditModal('+q.id+')" title="Edit"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>';
+        h += ' <button class="btn-icon btn-icon--danger" onclick="deleteQuery('+q.id+')" title="Delete"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg></button>';
+        h += '</td>';
+        h += '</tr>';
+    });
+
+    h += '</tbody></table></div>';
+
+    /* Pagination */
+    if (totalItems > currentLimit) {
+        var totalPages = Math.ceil(totalItems / currentLimit);
+        var curPage = Math.floor(currentOffset / currentLimit) + 1;
+        h += '<div class="prompts-pagination">';
+        h += '<span style="color:var(--text-muted);font-size:13px;">Showing ' + (currentOffset+1) + '\u2013' + Math.min(currentOffset+currentLimit, totalItems) + ' of ' + totalItems + '</span>';
+        h += '<div class="pagination-btns">';
+        h += '<button class="btn btn-sm" '+(curPage<=1?'disabled':'')+' onclick="goPage('+(curPage-1)+')">Prev</button>';
+        var start = Math.max(1, curPage - 3);
+        var end = Math.min(totalPages, start + 6);
+        if (end - start < 6) start = Math.max(1, end - 6);
+        for (var p = start; p <= end; p++) {
+            h += '<button class="btn btn-sm'+(p===curPage?' btn-primary':'')+'" onclick="goPage('+p+')">'+p+'</button>';
+        }
+        h += '<button class="btn btn-sm" '+(curPage>=totalPages?'disabled':'')+' onclick="goPage('+(curPage+1)+')">Next</button>';
+        h += '</div></div>';
+    }
+
+    document.getElementById('promptsApp').innerHTML = h;
+}
+
+/* ── Scenario Tabs ─────────────────────────────────────────── */
+
+function renderScenarioTabs() {
+    var h = '<div class="scenario-tabs-strip">';
+
+    /* All tab */
+    var allCount = stats.total || 0;
+    h += '<button class="scenario-tab'+(filterScenario===''?' scenario-tab--active':'')+'" onclick="onFilterScenario(\'\')">All <span class="scenario-tab-count">'+allCount+'</span></button>';
+
+    /* Scenario tabs with hierarchy */
+    scenarios.forEach(function(s) {
+        var parentCount = s.prompt_count || 0;
+        var childrenTotal = 0;
+        (s.children || []).forEach(function(c) { childrenTotal += c.prompt_count || 0; });
+        var totalCount = parentCount + childrenTotal;
+        var hasChildren = s.children && s.children.length > 0;
+
+        /* Parent tab */
+        var active = filterScenario === s.name ? ' scenario-tab--active' : '';
+        var parentCls = hasChildren ? ' scenario-tab--parent' : '';
+        h += '<button class="scenario-tab'+active+parentCls+'" onclick="onFilterScenario(\''+escAttr(s.name)+'\')">';
+        h += esc(s.name);
+        h += '<span class="scenario-tab-count">'+totalCount+'</span>';
+        h += '<span class="scenario-actions-btn" onclick="event.stopPropagation();openScenarioEditModal(\''+escAttr(s.name)+'\')" title="Edit">&#9881;</span>';
+        h += '</button>';
+
+        /* Children */
+        (s.children || []).forEach(function(c) {
+            var cactive = filterScenario === c.name ? ' scenario-tab--active' : '';
+            h += '<button class="scenario-tab scenario-tab--child'+cactive+'" onclick="onFilterScenario(\''+escAttr(c.name)+'\')">';
+            h += '\u2192 ' + esc(c.name);
+            h += '<span class="scenario-tab-count">'+(c.prompt_count||0)+'</span>';
+            h += '<span class="scenario-actions-btn" onclick="event.stopPropagation();openScenarioEditModal(\''+escAttr(c.name)+'\')" title="Edit">&#9881;</span>';
+            h += '</button>';
+        });
+    });
+
+    /* Uncategorized tab */
+    if (uncategorizedCount > 0) {
+        var uactive = filterScenario === '__uncategorized__' ? ' scenario-tab--active' : '';
+        h += '<button class="scenario-tab'+uactive+'" onclick="onFilterScenario(\'__uncategorized__\')" style="opacity:0.6;">Uncategorized <span class="scenario-tab-count">'+uncategorizedCount+'</span></button>';
+    }
+
+    /* Add & suggest buttons */
+    h += '<button class="scenario-tab scenario-tab--add" onclick="suggestScenarios()" title="AI-suggest scenarios">&#9889; Suggest</button>';
+    h += '<button class="scenario-tab scenario-tab--add" onclick="openScenarioCreateModal()" title="New Scenario">+ Scenario</button>';
+    h += '</div>';
+    return h;
+}
+
+/* ── Generation Panel ──────────────────────────────────────── */
+
+function renderGenPanel() {
+    if (!genState) return '';
+    var sc = findScenario(genState.scenarioName);
+    var h = '<div class="gen-panel">';
+    h += '<div class="gen-panel-header">';
+    h += '<div>';
+    h += '<strong>Generate Prompts:</strong> ' + esc(genState.scenarioName);
+    if (sc && sc.description) {
+        h += '<div class="gen-panel-desc">' + esc(sc.description) + '</div>';
+    }
+    h += '</div>';
+    h += '<button class="btn btn-sm btn-ghost" onclick="closeGenPanel()">\u2715 Close</button>';
+    h += '</div>';
+
+    if (genState.generating) {
+        h += '<div class="gen-panel-status">Generating prompts...</div>';
+    } else if (genState.prompts.length > 0) {
+        var selectedCount = genState.selectedSet.size;
+        h += '<div class="gen-panel-actions-top">';
+        h += '<span class="gen-panel-count">' + genState.prompts.length + ' prompts generated, ' + selectedCount + ' selected</span>';
+        h += '<button class="btn btn-sm" onclick="genSelectAll()">Select All</button>';
+        h += '<button class="btn btn-sm" onclick="genDeselectAll()">Deselect All</button>';
+        h += '</div>';
+
+        h += '<div class="gen-prompt-list">';
+        genState.prompts.forEach(function(p, idx) {
+            var checked = genState.selectedSet.has(idx) ? ' checked' : '';
+            var currentText = genState.editedTexts[idx] !== undefined ? genState.editedTexts[idx] : p.user_prompt;
+            var isEditing = genState.editingIdx === idx;
+            var isEdited = genState.editedTexts[idx] !== undefined;
+
+            h += '<div class="gen-prompt-item">';
+            h += '<input type="checkbox"'+checked+' onchange="genToggle('+idx+',this.checked)" class="gen-prompt-checkbox" style="margin-top:3px;">';
+
+            if (isEditing) {
+                h += '<textarea class="form-input gen-prompt-edit-textarea" id="genEditTextarea" rows="2">' + esc(currentText) + '</textarea>';
+                h += '<button class="btn-icon" onclick="genSaveEdit('+idx+')" title="Save" style="color:var(--accent);">&#10003;</button>';
+                h += '<button class="btn-icon" onclick="genCancelEdit()" title="Cancel">&#10005;</button>';
+            } else {
+                h += '<span class="gen-prompt-text'+(isEdited ? ' gen-prompt-text--edited' : '')+'">' + esc(currentText) + '</span>';
+                h += '<button class="btn-icon gen-edit-btn" onclick="event.stopPropagation();genStartEdit('+idx+')" title="Edit">&#9998;</button>';
+            }
+
+            if (p.metadata && p.metadata.query_subtype) {
+                h += '<span class="badge-subtype" style="margin-left:auto;flex-shrink:0;">' + esc(p.metadata.query_subtype) + '</span>';
+            }
+            h += '</div>';
+        });
+        h += '</div>';
+
+        h += '<div class="gen-panel-actions">';
+        h += '<button class="btn btn-sm" onclick="generateMore()">Generate More</button>';
+        h += '<button class="btn btn-primary btn-sm" onclick="saveGenerated()" '+(selectedCount===0?'disabled':'')+'>Save ' + selectedCount + ' Prompts</button>';
+        h += '</div>';
+    } else {
+        h += '<div class="gen-panel-actions">';
+        h += '<button class="btn btn-primary" onclick="runGenerate()">Generate Prompts</button>';
+        h += '</div>';
+    }
+
+    h += '</div>';
+    return h;
+}
+
+/* ── Helpers ────────────────────────────────────────────── */
+
+function pill(num, label, cls) {
+    return '<div class="stat-pill '+cls+'"><span class="stat-number">'+num+'</span><span class="stat-label">'+label+'</span></div>';
+}
+
+function sortTh(label, field, style) {
+    var arrow = '';
+    if (sortBy === field) arrow = sortDir === 'asc' ? ' \u2191' : ' \u2193';
+    var s = style ? ' style="'+style+'"' : '';
+    return '<th class="sortable-th"'+s+' onclick="onSort(\''+field+'\')" style="cursor:pointer;'+(style||'')+'">'+label+arrow+'</th>';
+}
+
+function sel(current, val) { return current === val ? ' selected' : ''; }
+
+function esc(text) {
+    var d = document.createElement('div');
+    d.textContent = text || '';
+    return d.innerHTML;
+}
+
+function escAttr(text) {
+    return (text || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;');
+}
+
+function fmtDate(iso) {
+    if (!iso) return '\u2014';
+    var d = new Date(iso);
+    return d.toLocaleDateString('en-GB', {day:'2-digit', month:'short', year:'numeric'});
+}
+
+function subtypeOpts(cls, selected) {
+    var list = subtypesForClass(cls);
+    return list.map(function(s) {
+        return '<option value="'+s+'"'+(selected===s?' selected':'')+'>'+s+'</option>';
+    }).join('');
+}
+
+function onModalClassChange(classSelectId, subtypeSelectId, customSubtypeId) {
+    var cls = document.getElementById(classSelectId).value;
+    var selEl = document.getElementById(subtypeSelectId);
+    var customInput = document.getElementById(customSubtypeId);
+    selEl.innerHTML = '<option value="">—</option>' + subtypeOpts(cls, '');
+    if (customInput) {
+        customInput.style.display = (cls === 'custom') ? '' : 'none';
+        if (cls !== 'custom') customInput.value = '';
+    }
+}
+
+/* ── Filters ───────────────────────────────────────────── */
+
+function onSearchInput() {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(function() {
+        filterSearch = document.getElementById('searchInput').value.trim();
+        currentOffset = 0;
+        refreshList();
+    }, 400);
+}
+
+function onFilterClass(val) {
+    filterClass = val;
+    if (filterSubtype && val) {
+        var valid = subtypesForClass(val);
+        if (valid.indexOf(filterSubtype) === -1) filterSubtype = '';
+    }
+    currentOffset = 0;
+    refreshList();
+}
+function onFilterSubtype(val) { filterSubtype = val; currentOffset = 0; refreshList(); }
+function onFilterActive(val) { filterActive = val; currentOffset = 0; refreshList(); }
+
+function onSort(field) {
+    if (sortBy === field) { sortDir = sortDir === 'asc' ? 'desc' : 'asc'; }
+    else { sortBy = field; sortDir = 'asc'; }
+    currentOffset = 0;
+    refreshList();
+}
+
+function goPage(page) {
+    currentOffset = (page - 1) * currentLimit;
+    selectedIds.clear();
+    selectAllChecked = false;
+    refreshList();
+}
+
+/* ── Scenario Filter ───────────────────────────────────── */
+
+function onFilterScenario(name) {
+    filterScenario = name;
+    currentOffset = 0;
+    refreshList();
+}
+
+/* ── Selection ─────────────────────────────────────────── */
+
+function toggleSelect(id, checked) {
+    if (checked) selectedIds.add(id);
+    else selectedIds.delete(id);
+    selectAllChecked = queries.length > 0 && queries.every(function(q){ return selectedIds.has(q.id); });
+    renderApp();
+}
+
+function toggleSelectAll(checked) {
+    selectAllChecked = checked;
+    queries.forEach(function(q) {
+        if (checked) selectedIds.add(q.id);
+        else selectedIds.delete(q.id);
+    });
+    renderApp();
+}
+
+function clearSelection() {
+    selectedIds.clear();
+    selectAllChecked = false;
+    renderApp();
+}
+
+/* ── Actions ───────────────────────────────────────────── */
+
+async function toggleActive(id, newState) {
+    var resp = await apiFetch('/api/v1/projects/'+PROJECT_ID+'/llm-queries/'+id, {
+        method: 'PUT',
+        body: JSON.stringify({is_active: newState})
+    });
+    if (resp && resp.ok) {
+        showFlash(newState ? 'Prompt activated' : 'Prompt deactivated');
+        await refreshAll();
+    }
+}
+
+async function deleteQuery(id) {
+    if (!confirm('Delete this prompt? This cannot be undone.')) return;
+    var resp = await apiFetch('/api/v1/projects/'+PROJECT_ID+'/llm-queries/'+id, {method:'DELETE'});
+    if (resp && (resp.ok || resp.status === 204)) {
+        showFlash('Prompt deleted');
+        selectedIds.delete(id);
+        currentOffset = 0;
+        await refreshAll();
+    }
+}
+
+async function bulkToggle(active) {
+    var ids = Array.from(selectedIds);
+    var resp = await apiFetch('/api/v1/projects/'+PROJECT_ID+'/llm-queries/bulk-toggle', {
+        method: 'POST',
+        body: JSON.stringify({ids: ids, is_active: active})
+    });
+    if (resp && resp.ok) {
+        var d = await resp.json();
+        showFlash(d.updated + ' prompts ' + (active ? 'activated' : 'deactivated'));
+        selectedIds.clear();
+        selectAllChecked = false;
+        await refreshAll();
+    }
+}
+
+async function bulkDelete() {
+    if (!confirm('Delete ' + selectedIds.size + ' prompts? This cannot be undone.')) return;
+    var ids = Array.from(selectedIds);
+    var resp = await apiFetch('/api/v1/projects/'+PROJECT_ID+'/llm-queries/bulk-delete', {
+        method: 'POST',
+        body: JSON.stringify({ids: ids})
+    });
+    if (resp && resp.ok) {
+        var d = await resp.json();
+        showFlash(d.deleted + ' prompts deleted');
+        selectedIds.clear();
+        selectAllChecked = false;
+        currentOffset = 0;
+        await refreshAll();
+    }
+}
+
+/* ── Edit Modal ────────────────────────────────────────── */
+
+function openEditModal(id) {
+    var q = queries.find(function(x){ return x.id === id; });
+    if (!q) return;
+    var body = document.getElementById('editModalBody');
+    var isCustomClass = q.query_class && q.query_class !== 'thematic' && q.query_class !== 'branded';
+    var editCls = isCustomClass ? 'custom' : (q.query_class || '');
+
+    var f = '<form onsubmit="saveEdit(event,'+q.id+')" style="display:flex;flex-direction:column;gap:16px;">';
+    f += '<div class="form-group"><label>Query Text</label>';
+    f += '<textarea id="editText" class="form-input" rows="4" style="resize:vertical;" required>'+esc(q.query_text)+'</textarea></div>';
+    f += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">';
+    f += '<div class="form-group"><label>Class</label><select id="editClass" class="form-input" onchange="onModalClassChange(\'editClass\',\'editSubtype\',\'editCustomSubtype\')">';
+    f += '<option value="">—</option>';
+    f += '<option value="thematic"'+sel(editCls,'thematic')+'>Thematic</option>';
+    f += '<option value="branded"'+sel(editCls,'branded')+'>Branded</option>';
+    f += '<option value="custom"'+sel(editCls,'custom')+'>Custom</option>';
+    f += '</select></div>';
+    f += '<div class="form-group"><label>Subtype</label><select id="editSubtype" class="form-input">';
+    f += '<option value="">—</option>' + subtypeOpts(editCls, q.query_subtype);
+    f += '</select>';
+    f += '<input type="text" id="editCustomSubtype" class="form-input" placeholder="New custom subtype..." style="margin-top:6px;display:'+(editCls==='custom'?'':'none')+'" value="'+escAttr(isCustomClass && q.query_subtype && getCustomSubtypes().indexOf(q.query_subtype)===-1 ? q.query_subtype : '')+'">';
+    f += '</div></div>';
+    f += '<div class="form-group"><label>Target Brand</label>';
+    f += '<input type="text" id="editBrand" class="form-input" value="'+escAttr(q.target_brand || '')+'"></div>';
+    f += '<div class="form-group"><label>Scenario</label>';
+    f += '<select id="editScenario" class="form-input">' + scenarioSelectOptions(q.category || '') + '</select></div>';
+    f += '<div style="display:flex;gap:8px;justify-content:flex-end;">';
+    f += '<button type="button" class="btn btn-ghost" onclick="closeEditModal()">Cancel</button>';
+    f += '<button type="submit" class="btn btn-primary">Save</button></div>';
+    f += '</form>';
+    body.innerHTML = f;
+    document.getElementById('editModalTitle').textContent = 'Edit Prompt #' + q.id;
+    document.getElementById('editModal').style.display = '';
+}
+
+async function saveEdit(e, id) {
+    e.preventDefault();
+    var cls = document.getElementById('editClass').value || null;
+    var sub = document.getElementById('editSubtype').value || null;
+    if (cls === 'custom') {
+        var customSub = document.getElementById('editCustomSubtype').value.trim();
+        if (customSub && !sub) sub = customSub;
+    }
+    var scenario = document.getElementById('editScenario').value || null;
+    var payload = {
+        query_text: document.getElementById('editText').value,
+        query_class: cls,
+        query_subtype: sub,
+        target_brand: document.getElementById('editBrand').value || null,
+        category: scenario
+    };
+    var resp = await apiFetch('/api/v1/projects/'+PROJECT_ID+'/llm-queries/'+id, {
+        method: 'PUT', body: JSON.stringify(payload)
+    });
+    if (resp && resp.ok) {
+        showFlash('Prompt updated');
+        closeEditModal();
+        await refreshAll();
+    } else if (resp) {
+        var err = await resp.json().catch(function(){ return {}; });
+        showFlash(err.detail || 'Update failed', 'error');
+    }
+}
+
+function closeEditModal() { document.getElementById('editModal').style.display = 'none'; }
+
+/* ── Add Modal ─────────────────────────────────────────── */
+
+function openAddModal() {
+    var body = document.getElementById('addModalBody');
+    var brand = (projectData && projectData.brand_name) ? projectData.brand_name : '';
+    var preselectedScenario = filterScenario && filterScenario !== '__uncategorized__' ? filterScenario : '';
+
+    var f = '<form onsubmit="saveNew(event)" style="display:flex;flex-direction:column;gap:16px;">';
+    f += '<div class="form-group"><label>Query Text</label>';
+    f += '<textarea id="addText" class="form-input" rows="4" style="resize:vertical;" required placeholder="Enter the prompt text..."></textarea></div>';
+    f += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">';
+    f += '<div class="form-group"><label>Class</label><select id="addClass" class="form-input" onchange="onModalClassChange(\'addClass\',\'addSubtype\',\'addCustomSubtype\')">';
+    f += '<option value="">—</option><option value="thematic">Thematic</option><option value="branded">Branded</option><option value="custom">Custom</option>';
+    f += '</select></div>';
+    f += '<div class="form-group"><label>Subtype</label><select id="addSubtype" class="form-input">';
+    f += '<option value="">—</option>';
+    f += '</select>';
+    f += '<input type="text" id="addCustomSubtype" class="form-input" placeholder="New custom subtype..." style="margin-top:6px;display:none">';
+    f += '</div></div>';
+    f += '<div class="form-group"><label>Target Brand</label>';
+    f += '<input type="text" id="addBrand" class="form-input" value="'+escAttr(brand)+'"></div>';
+    f += '<div class="form-group"><label>Scenario</label>';
+    f += '<select id="addScenario" class="form-input">' + scenarioSelectOptions(preselectedScenario) + '</select></div>';
+    f += '<div style="display:flex;gap:8px;justify-content:flex-end;">';
+    f += '<button type="button" class="btn btn-ghost" onclick="closeAddModal()">Cancel</button>';
+    f += '<button type="submit" class="btn btn-primary">Add Prompt</button></div>';
+    f += '</form>';
+    body.innerHTML = f;
+    document.getElementById('addModal').style.display = '';
+    setTimeout(function(){ document.getElementById('addText').focus(); }, 100);
+}
+
+async function saveNew(e) {
+    e.preventDefault();
+    var cls = document.getElementById('addClass').value || null;
+    var sub = document.getElementById('addSubtype').value || null;
+    if (cls === 'custom') {
+        var customSub = document.getElementById('addCustomSubtype').value.trim();
+        if (customSub && !sub) sub = customSub;
+    }
+    var qtype = 'custom';
+    if (cls === 'branded') qtype = 'brand_check';
+    else if (cls === 'thematic') qtype = 'recommendation';
+
+    var scenario = document.getElementById('addScenario').value || null;
+    var payload = {
+        query_text: document.getElementById('addText').value,
+        query_type: qtype,
+        query_class: cls,
+        query_subtype: sub,
+        target_brand: document.getElementById('addBrand').value || null,
+        category: scenario
+    };
+    var resp = await apiFetch('/api/v1/projects/'+PROJECT_ID+'/llm-queries/single', {
+        method: 'POST', body: JSON.stringify(payload)
+    });
+    if (resp && resp.ok) {
+        showFlash('Prompt added');
+        closeAddModal();
+        currentOffset = 0;
+        sortBy = 'created_at';
+        sortDir = 'desc';
+        await refreshAll();
+    } else if (resp) {
+        var err = await resp.json().catch(function(){ return {}; });
+        showFlash(err.detail || 'Failed to add prompt', 'error');
+    }
+}
+
+function closeAddModal() { document.getElementById('addModal').style.display = 'none'; }
+
+/* ── Scenario Create Modal ─────────────────────────────── */
+
+function openScenarioCreateModal() {
+    var body = document.getElementById('scenarioModalBody');
+    document.getElementById('scenarioModalTitle').textContent = 'New Scenario';
+    var f = '<form onsubmit="saveNewScenario(event)" style="display:flex;flex-direction:column;gap:16px;">';
+    f += '<div class="form-group"><label>Scenario Name *</label>';
+    f += '<input type="text" id="scenarioName" class="form-input" required placeholder="e.g. IT-specialists looking for apartments"></div>';
+    f += '<div class="form-group"><label>Description <button type="button" class="btn btn-ghost btn-sm" id="genDescBtnModal" onclick="generateScenarioDesc()" style="margin-left:8px;font-size:12px;">&#9889; Generate</button></label>';
+    f += '<textarea id="scenarioDesc" class="form-input" rows="3" style="resize:vertical;" placeholder="Describe the scenario in detail..."></textarea>';
+    f += '<div id="descGenStatusModal" style="display:none;font-size:12px;color:var(--accent);margin-top:4px;"></div></div>';
+    f += '<div class="form-group"><label>Parent Scenario</label>';
+    f += '<select id="scenarioParent" class="form-input">' + parentSelectOptions('', '') + '</select></div>';
+    f += '<div style="display:flex;gap:8px;justify-content:flex-end;">';
+    f += '<button type="button" class="btn btn-ghost" onclick="closeScenarioModal()">Cancel</button>';
+    f += '<button type="submit" class="btn btn-primary">Create</button></div>';
+    f += '</form>';
+    body.innerHTML = f;
+    document.getElementById('scenarioModal').style.display = '';
+    setTimeout(function(){ document.getElementById('scenarioName').focus(); }, 100);
+}
+
+async function saveNewScenario(e) {
+    e.preventDefault();
+    var name = document.getElementById('scenarioName').value.trim();
+    var desc = document.getElementById('scenarioDesc').value.trim();
+    var parent = document.getElementById('scenarioParent').value || null;
+    if (!name) return;
+    var resp = await apiFetch('/api/v1/projects/'+PROJECT_ID+'/scenarios', {
+        method: 'POST',
+        body: JSON.stringify({name: name, description: desc, parent: parent})
+    });
+    if (resp && (resp.ok || resp.status === 201)) {
+        showFlash('Scenario "'+name+'" created');
+        closeScenarioModal();
+        await refreshAll();
+    } else if (resp) {
+        var err = await resp.json().catch(function(){ return {}; });
+        showFlash(err.detail || 'Failed to create scenario', 'error');
+    }
+}
+
+/* ── Scenario Edit Modal ───────────────────────────────── */
+
+function openScenarioEditModal(name) {
+    var sc = findScenario(name);
+    if (!sc) return;
+    var body = document.getElementById('scenarioModalBody');
+    document.getElementById('scenarioModalTitle').textContent = 'Edit Scenario';
+
+    var f = '<form onsubmit="saveScenarioEdit(event,\''+escAttr(name)+'\')" style="display:flex;flex-direction:column;gap:16px;">';
+    f += '<div class="form-group"><label>Scenario Name *</label>';
+    f += '<input type="text" id="scenarioName" class="form-input" required value="'+escAttr(sc.name)+'"></div>';
+    f += '<div class="form-group"><label>Description <button type="button" class="btn btn-ghost btn-sm" id="genDescBtnModal" onclick="generateScenarioDesc()" style="margin-left:8px;font-size:12px;">&#9889; Generate</button></label>';
+    f += '<textarea id="scenarioDesc" class="form-input" rows="3" style="resize:vertical;">'+esc(sc.description || '')+'</textarea>';
+    f += '<div id="descGenStatusModal" style="display:none;font-size:12px;color:var(--accent);margin-top:4px;"></div></div>';
+    f += '<div class="form-group"><label>Parent Scenario</label>';
+    f += '<select id="scenarioParent" class="form-input">' + parentSelectOptions(sc.parent || '', sc.name) + '</select></div>';
+
+    f += '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">';
+    f += '<button type="button" class="btn btn-danger" onclick="deleteScenarioConfirm(\''+escAttr(name)+'\')">Delete</button>';
+    f += '<div style="flex:1"></div>';
+    f += '<button type="button" class="btn btn-sm" onclick="openGenForScenario(\''+escAttr(name)+'\');closeScenarioModal();">Generate Prompts</button>';
+    f += '<button type="button" class="btn btn-ghost" onclick="closeScenarioModal()">Cancel</button>';
+    f += '<button type="submit" class="btn btn-primary">Save</button>';
+    f += '</div>';
+    f += '</form>';
+
+    body.innerHTML = f;
+    document.getElementById('scenarioModal').style.display = '';
+}
+
+async function saveScenarioEdit(e, originalName) {
+    e.preventDefault();
+    var name = document.getElementById('scenarioName').value.trim();
+    var desc = document.getElementById('scenarioDesc').value.trim();
+    var parent = document.getElementById('scenarioParent').value || null;
+    if (!name) return;
+    var payload = {name: name, description: desc, parent: parent};
+    var resp = await apiFetch('/api/v1/projects/'+PROJECT_ID+'/scenarios/'+encodeURIComponent(originalName), {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+    });
+    if (resp && resp.ok) {
+        showFlash('Scenario updated');
+        closeScenarioModal();
+        if (filterScenario === originalName && name !== originalName) {
+            filterScenario = name;
+        }
+        await refreshAll();
+    } else if (resp) {
+        var err = await resp.json().catch(function(){ return {}; });
+        showFlash(err.detail || 'Failed to update scenario', 'error');
+    }
+}
+
+function deleteScenarioConfirm(name) {
+    var body = document.getElementById('scenarioModalBody');
+    document.getElementById('scenarioModalTitle').textContent = 'Delete Scenario';
+    var f = '<div style="display:flex;flex-direction:column;gap:16px;">';
+    f += '<p>Delete scenario <strong>"'+esc(name)+'"</strong>?</p>';
+    f += '<div class="scenario-delete-opts">';
+    f += '<label class="scenario-delete-opt"><input type="radio" name="deleteOpt" value="keep" checked> Keep prompts (remove scenario assignment)</label>';
+    f += '<label class="scenario-delete-opt"><input type="radio" name="deleteOpt" value="delete"> Delete prompts too</label>';
+    f += '</div>';
+    f += '<div style="display:flex;gap:8px;justify-content:flex-end;">';
+    f += '<button class="btn btn-ghost" onclick="closeScenarioModal()">Cancel</button>';
+    f += '<button class="btn btn-danger" onclick="doDeleteScenario(\''+escAttr(name)+'\')">Delete</button>';
+    f += '</div></div>';
+    body.innerHTML = f;
+}
+
+async function doDeleteScenario(name) {
+    var deletePrompts = document.querySelector('input[name="deleteOpt"]:checked').value === 'delete';
+    var url = '/api/v1/projects/'+PROJECT_ID+'/scenarios/'+encodeURIComponent(name)+'?delete_prompts='+deletePrompts;
+    var resp = await apiFetch(url, {method: 'DELETE'});
+    if (resp && (resp.ok || resp.status === 204)) {
+        showFlash('Scenario "'+name+'" deleted');
+        closeScenarioModal();
+        if (filterScenario === name) filterScenario = '';
+        await refreshAll();
+    } else if (resp) {
+        var err = await resp.json().catch(function(){ return {}; });
+        showFlash(err.detail || 'Failed to delete scenario', 'error');
+    }
+}
+
+function closeScenarioModal() { document.getElementById('scenarioModal').style.display = 'none'; }
+
+/* ── Move Modal ────────────────────────────────────────── */
+
+function openMoveModal() {
+    var body = document.getElementById('moveModalBody');
+    var f = '<form onsubmit="doMovePrompts(event)" style="display:flex;flex-direction:column;gap:16px;">';
+    f += '<p style="color:var(--text-secondary);font-size:13px;">Move <strong>'+selectedIds.size+'</strong> prompts to:</p>';
+    f += '<select id="moveTarget" class="form-input">' + scenarioSelectOptions('') + '</select>';
+    f += '<div style="display:flex;gap:8px;justify-content:flex-end;">';
+    f += '<button type="button" class="btn btn-ghost" onclick="closeMoveModal()">Cancel</button>';
+    f += '<button type="submit" class="btn btn-primary">Move</button>';
+    f += '</div></form>';
+    body.innerHTML = f;
+    document.getElementById('moveModal').style.display = '';
+}
+
+async function doMovePrompts(e) {
+    e.preventDefault();
+    var target = document.getElementById('moveTarget').value;
+    var resp = await apiFetch('/api/v1/projects/'+PROJECT_ID+'/scenarios/move-prompts', {
+        method: 'POST',
+        body: JSON.stringify({query_ids: Array.from(selectedIds), target_scenario: target})
+    });
+    if (resp && resp.ok) {
+        var d = await resp.json();
+        showFlash(d.moved + ' prompts moved');
+        closeMoveModal();
+        selectedIds.clear();
+        selectAllChecked = false;
+        await refreshAll();
+    } else if (resp) {
+        var err = await resp.json().catch(function(){ return {}; });
+        showFlash(err.detail || 'Failed to move prompts', 'error');
+    }
+}
+
+function closeMoveModal() { document.getElementById('moveModal').style.display = 'none'; }
+
+/* ── Suggest Scenarios ─────────────────────────────────── */
+
+var isSuggesting = false;
+
+async function suggestScenarios() {
+    if (!projectData || !projectData.brand_name) {
+        showFlash('Project has no brand name configured', 'error');
+        return;
+    }
+    if (isSuggesting) return;
+    isSuggesting = true;
+
+    var body = document.getElementById('suggestModalBody');
+    body.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-secondary);">Generating suggestions...</div>';
+    document.getElementById('suggestModal').style.display = '';
+
+    try {
+        var resp = await apiFetch('/api/v1/onboarding/suggest-categories', {
+            method: 'POST',
+            body: JSON.stringify({
+                brand_name: projectData.brand_name,
+                brand_description: projectData.brand_description || '',
+                market: projectData.market || 'ru',
+                existing: flatScenarios().map(function(s) { return s.name; })
+            })
+        });
+
+        if (!resp || !resp.ok) {
+            var err = resp ? (await resp.json().catch(function(){ return {}; })) : {};
+            body.innerHTML = '<p style="color:var(--text-muted);">' + esc(err.detail || err.error || 'Failed to generate suggestions') + '</p>';
+            return;
+        }
+
+        var data = await resp.json();
+        if (data.error === 'no_api_key') {
+            body.innerHTML = '<p style="color:var(--text-muted);">No API keys configured. Add Gemini, OpenAI, or Perplexity API key in Settings.</p>';
+            return;
+        }
+
+        var suggestions = data.categories || [];
+        if (suggestions.length === 0) {
+            body.innerHTML = '<p style="color:var(--text-muted);">No new suggestions found.</p>';
+            return;
+        }
+
+        renderSuggestModalContent(suggestions);
+    } catch (e) {
+        body.innerHTML = '<p style="color:red;">Error: ' + esc(e.message) + '</p>';
+    } finally {
+        isSuggesting = false;
+    }
+}
+
+function renderSuggestModalContent(suggestions) {
+    var body = document.getElementById('suggestModalBody');
+    var h = '<p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;">Select scenarios to add:</p>';
+    h += '<div style="display:flex;flex-direction:column;gap:8px;max-height:400px;overflow-y:auto;">';
+    suggestions.forEach(function(name) {
+        h += '<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;cursor:pointer;">';
+        h += '<input type="checkbox" checked class="suggest-checkbox" data-name="' + escAttr(name) + '">';
+        h += '<span style="font-size:14px;">' + esc(name) + '</span>';
+        h += '</label>';
+    });
+    h += '</div>';
+    h += '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">';
+    h += '<button class="btn btn-ghost" onclick="closeSuggestModal()">Cancel</button>';
+    h += '<button class="btn btn-primary" onclick="addSuggestedScenarios()">Add Selected</button>';
+    h += '</div>';
+    body.innerHTML = h;
+}
+
+async function addSuggestedScenarios() {
+    var checkboxes = document.querySelectorAll('.suggest-checkbox:checked');
+    var names = [];
+    checkboxes.forEach(function(cb) { names.push(cb.dataset.name); });
+
+    if (names.length === 0) {
+        showFlash('No scenarios selected', 'warning');
+        return;
+    }
+
+    var created = 0;
+    for (var i = 0; i < names.length; i++) {
+        var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/scenarios', {
+            method: 'POST',
+            body: JSON.stringify({ name: names[i], description: '', parent: null })
+        });
+        if (resp && (resp.ok || resp.status === 201)) created++;
+    }
+
+    showFlash(created + ' scenario(s) added');
+    closeSuggestModal();
+    await refreshAll();
+}
+
+function closeSuggestModal() {
+    document.getElementById('suggestModal').style.display = 'none';
+}
+
+/* ── AI Scenario Description Generation ───────────────── */
+
+var isGeneratingDesc = false;
+
+async function generateScenarioDesc() {
+    if (isGeneratingDesc) return;
+    var nameEl = document.getElementById('scenarioName');
+    var name = nameEl ? nameEl.value.trim() : '';
+    if (!name) {
+        showFlash('Enter a scenario name first', 'warning');
+        if (nameEl) nameEl.focus();
+        return;
+    }
+    if (!projectData || !projectData.brand_name) {
+        showFlash('Project has no brand name configured', 'error');
+        return;
+    }
+
+    isGeneratingDesc = true;
+    var btn = document.getElementById('genDescBtnModal');
+    var statusEl = document.getElementById('descGenStatusModal');
+    if (btn) btn.disabled = true;
+    if (statusEl) { statusEl.style.display = ''; statusEl.textContent = 'Generating description...'; }
+
+    try {
+        var resp = await apiFetch('/api/v1/onboarding/generate-scenario-description', {
+            method: 'POST',
+            body: JSON.stringify({
+                brand_name: projectData.brand_name,
+                brand_description: projectData.brand_description || '',
+                scenario_name: name,
+                market: projectData.market || 'ru'
+            })
+        });
+
+        if (!resp) {
+            if (statusEl) statusEl.textContent = 'Authentication error';
+            return;
+        }
+
+        var data = await resp.json();
+        if (data.description) {
+            document.getElementById('scenarioDesc').value = data.description;
+            if (statusEl) statusEl.textContent = 'Description generated.';
+        } else {
+            if (statusEl) statusEl.textContent = data.error || 'Could not generate description';
+        }
+    } catch (e) {
+        if (statusEl) statusEl.textContent = 'Error: ' + e.message;
+    } finally {
+        isGeneratingDesc = false;
+        if (btn) btn.disabled = false;
+        setTimeout(function() { if (statusEl) statusEl.style.display = 'none'; }, 4000);
+    }
+}
+
+/* ── Generation Panel Logic ────────────────────────────── */
+
+function openGenForScenario(name) {
+    genState = {
+        scenarioName: name,
+        prompts: [],
+        selectedSet: new Set(),
+        generating: false,
+        editedTexts: {},
+        editingIdx: -1
+    };
+    renderApp();
+    runGenerate();
+}
+
+function closeGenPanel() {
+    genState = null;
+    renderApp();
+}
+
+async function runGenerate() {
+    if (!genState) return;
+    genState.generating = true;
+    renderApp();
+
+    var url = '/api/v1/projects/'+PROJECT_ID+'/scenarios/'+encodeURIComponent(genState.scenarioName)+'/generate';
+    try {
+        var resp = await apiFetch(url, {method: 'POST'});
+        if (resp && resp.ok) {
+            var data = await resp.json();
+            var newPrompts = (data.prompts || []);
+            genState.prompts = genState.prompts.concat(newPrompts);
+            showFlash(newPrompts.length + ' prompts generated');
+        } else if (resp) {
+            var err = await resp.json().catch(function(){ return {}; });
+            var msg = 'Generation failed';
+            if (err.detail) {
+                msg = typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail).substring(0, 300);
+            }
+            showFlash(msg, 'error');
+        }
+    } catch(ex) {
+        showFlash('Generation error: ' + ex.message, 'error');
+    }
+    genState.generating = false;
+    renderApp();
+}
+
+function generateMore() { runGenerate(); }
+
+function genToggle(idx, checked) {
+    if (!genState) return;
+    if (checked) genState.selectedSet.add(idx);
+    else genState.selectedSet.delete(idx);
+    renderApp();
+}
+
+function genSelectAll() {
+    if (!genState) return;
+    genState.prompts.forEach(function(_, idx) { genState.selectedSet.add(idx); });
+    renderApp();
+}
+
+function genDeselectAll() {
+    if (!genState) return;
+    genState.selectedSet.clear();
+    renderApp();
+}
+
+function genStartEdit(idx) {
+    if (!genState) return;
+    genState.editingIdx = idx;
+    renderApp();
+    setTimeout(function() {
+        var ta = document.getElementById('genEditTextarea');
+        if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+    }, 50);
+}
+
+function genSaveEdit(idx) {
+    if (!genState) return;
+    var ta = document.getElementById('genEditTextarea');
+    if (ta) {
+        var newText = ta.value.trim();
+        if (newText && newText !== genState.prompts[idx].user_prompt) {
+            genState.editedTexts[idx] = newText;
+        } else {
+            delete genState.editedTexts[idx];
+        }
+    }
+    genState.editingIdx = -1;
+    renderApp();
+}
+
+function genCancelEdit() {
+    if (!genState) return;
+    genState.editingIdx = -1;
+    renderApp();
+}
+
+async function saveGenerated() {
+    if (!genState || genState.selectedSet.size === 0) return;
+    var toSave = [];
+    genState.selectedSet.forEach(function(idx) {
+        var p = genState.prompts[idx];
+        if (p) {
+            var text = genState.editedTexts[idx] !== undefined ? genState.editedTexts[idx] : p.user_prompt;
+            toSave.push({
+                user_prompt: text,
+                query_class: (p.metadata && p.metadata.query_class) || '',
+                query_subtype: (p.metadata && p.metadata.query_subtype) || '',
+                measurement_type: (p.metadata && p.metadata.measurement_type) || ''
+            });
+        }
+    });
+
+    var url = '/api/v1/projects/'+PROJECT_ID+'/scenarios/'+encodeURIComponent(genState.scenarioName)+'/save-prompts';
+    var resp = await apiFetch(url, {
+        method: 'POST',
+        body: JSON.stringify({prompts: toSave})
+    });
+    if (resp && resp.ok) {
+        var d = await resp.json();
+        showFlash(d.saved.created + ' prompts saved, ' + d.saved.skipped_duplicates + ' duplicates skipped');
+        genState = null;
+        currentOffset = 0;
+        await refreshAll();
+    } else if (resp) {
+        var err = await resp.json().catch(function(){ return {}; });
+        showFlash(err.detail || 'Failed to save prompts', 'error');
+    }
+}
+</script>
+{% endblock %}

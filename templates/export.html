@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+
+{% block title %}Export — LLM Tracker{% endblock %}
+{% block page_title %}Export{% endblock %}
+
+{% block content %}
+
+<div class="card">
+    <h2>Export Positions to CSV</h2>
+    <form onsubmit="downloadCsv(event)" class="form-grid">
+        <div class="form-group">
+            <label>Project</label>
+            <select id="exportProject" required>
+                <option value="">Select a project...</option>
+            </select>
+        </div>
+        <div class="form-group"></div>
+        <div class="form-group">
+            <label>Date From</label>
+            <input type="date" id="exportDateFrom">
+        </div>
+        <div class="form-group">
+            <label>Date To</label>
+            <input type="date" id="exportDateTo">
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Download CSV</button>
+        </div>
+    </form>
+    <p class="text-secondary text-sm" style="margin-top:0.75rem;">
+        Leave dates empty for the default range (last 30 days).
+    </p>
+</div>
+
+<div class="card" style="margin-top:1.5rem;">
+    <h2>Export LLM Visibility to CSV</h2>
+    <form onsubmit="downloadLlmCsv(event)" class="form-grid">
+        <div class="form-group">
+            <label>Project</label>
+            <select id="llmExportProject" required>
+                <option value="">Select a project...</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Provider</label>
+            <select id="llmExportProvider">
+                <option value="">All Providers</option>
+                <option value="chatgpt">ChatGPT</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="perplexity">Perplexity</option>
+                <option value="yandexgpt">YandexGPT</option>
+                <option value="gemini">Gemini</option>
+                <option value="gigachat">GigaChat</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Date From</label>
+            <input type="date" id="llmExportDateFrom">
+        </div>
+        <div class="form-group">
+            <label>Date To</label>
+            <input type="date" id="llmExportDateTo">
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Download LLM CSV</button>
+        </div>
+    </form>
+    <p class="text-secondary text-sm" style="margin-top:0.75rem;">
+        Exports query text, provider, mention status, cited URLs, cost and more.
+    </p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadProjects() {
+    var resp = await apiFetch('/api/v1/projects/');
+    if (!resp) return;
+    var projects = await resp.json();
+    var serpSelect = document.getElementById('exportProject');
+    var llmSelect = document.getElementById('llmExportProject');
+
+    projects.forEach(function(p) {
+        var opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = p.name + ' (' + (p.domain || 'no domain') + ')';
+        serpSelect.appendChild(opt);
+
+        if (p.track_llm) {
+            var llmOpt = document.createElement('option');
+            llmOpt.value = p.id;
+            llmOpt.textContent = p.name + ' (' + (p.brand_name || p.domain || 'no domain') + ')';
+            llmSelect.appendChild(llmOpt);
+        }
+    });
+
+    // Set default dates
+    var today = new Date();
+    var thirtyAgo = new Date(today);
+    thirtyAgo.setDate(thirtyAgo.getDate() - 30);
+    document.getElementById('exportDateTo').value = today.toISOString().split('T')[0];
+    document.getElementById('exportDateFrom').value = thirtyAgo.toISOString().split('T')[0];
+    document.getElementById('llmExportDateTo').value = today.toISOString().split('T')[0];
+    document.getElementById('llmExportDateFrom').value = thirtyAgo.toISOString().split('T')[0];
+}
+
+async function downloadCsv(e) {
+    e.preventDefault();
+    var projectId = document.getElementById('exportProject').value;
+    if (!projectId) {
+        showFlash('Please select a project', 'error');
+        return;
+    }
+
+    var params = new URLSearchParams();
+    var dateFrom = document.getElementById('exportDateFrom').value;
+    var dateTo = document.getElementById('exportDateTo').value;
+    if (dateFrom) params.set('date_from', dateFrom);
+    if (dateTo) params.set('date_to', dateTo);
+
+    var url = '/api/v1/export/projects/' + projectId + '/csv';
+    if (params.toString()) url += '?' + params.toString();
+
+    var resp = await apiFetch(url);
+    if (!resp) return;
+    if (!resp.ok) {
+        var err = await resp.json();
+        showFlash(err.detail || 'Export failed', 'error');
+        return;
+    }
+
+    // Trigger download
+    var blob = await resp.blob();
+    var disposition = resp.headers.get('content-disposition') || '';
+    var filename = 'export.csv';
+    var match = disposition.match(/filename="?([^"]+)"?/);
+    if (match) filename = match[1];
+
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showFlash('CSV downloaded');
+}
+
+async function downloadLlmCsv(e) {
+    e.preventDefault();
+    var projectId = document.getElementById('llmExportProject').value;
+    if (!projectId) {
+        showFlash('Please select a project', 'error');
+        return;
+    }
+
+    var params = new URLSearchParams();
+    var dateFrom = document.getElementById('llmExportDateFrom').value;
+    var dateTo = document.getElementById('llmExportDateTo').value;
+    var provider = document.getElementById('llmExportProvider').value;
+    if (dateFrom) params.set('date_from', dateFrom);
+    if (dateTo) params.set('date_to', dateTo);
+    if (provider) params.set('provider', provider);
+
+    var url = '/api/v1/export/projects/' + projectId + '/llm-csv';
+    if (params.toString()) url += '?' + params.toString();
+
+    var resp = await apiFetch(url);
+    if (!resp) return;
+    if (!resp.ok) {
+        var err = await resp.json();
+        showFlash(err.detail || 'Export failed', 'error');
+        return;
+    }
+
+    var blob = await resp.blob();
+    var disposition = resp.headers.get('content-disposition') || '';
+    var filename = 'llm_export.csv';
+    var match = disposition.match(/filename="?([^"]+)"?/);
+    if (match) filename = match[1];
+
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showFlash('LLM CSV downloaded');
+}
+
+document.addEventListener('DOMContentLoaded', loadProjects);
+</script>
+{% endblock %}

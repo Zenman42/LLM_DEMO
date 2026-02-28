@@ -1,0 +1,1152 @@
+{% extends "base.html" %}
+{% block title %}Competitors — LLM Tracker{% endblock %}
+{% block page_title %}Competitors{% endblock %}
+
+{% block content %}
+<div id="competitorsApp">
+    <div class="empty-state"><p>Loading...</p></div>
+</div>
+
+<!-- Verify Modal -->
+<div id="verifyModal" class="serp-modal-overlay" style="display:none;" onclick="if(event.target===this)closeVerifyModal()">
+    <div class="serp-modal" style="max-width:780px;">
+        <div class="serp-modal-header">
+            <h3>Verification Results</h3>
+            <button class="serp-modal-close" onclick="closeVerifyModal()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div class="serp-modal-body" style="padding:24px;max-height:70vh;overflow-y:auto;" id="verifyModalBody">
+            <div class="verify-progress"><span class="spinner"></span> Verifying entities...</div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var PROJECT_ID = {{ project_id }};
+var projectData = null;
+var competitors = [];
+var discovered = [];
+var discoveredTotal = 0;
+var discoveredPage = 0;
+var PAGE_SIZE = 30;
+var suggestedTotal = 0;
+var brandSubBrands = [];
+var competitorSubBrands = {};  // {compName: [{name, aliases}]}
+var brandInfo = null;  // {name, mention_count, aliases}
+var statusFilter = '';
+var searchQuery = '';
+var verifying = false;
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function escapeJsString(str) {
+    if (!str) return '';
+    return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+}
+
+function unescapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+
+function renderMentionBadges(own, withAliases, total, hasSubBrands) {
+    // own = entity's own mentions, withAliases = entity+aliases, total = entity+aliases+sub-brands+their aliases
+    if (!own && !withAliases && !total) return '';
+    var h = ' <span style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap;">';
+    h += '<span title="Entity mentions (own)">' + (own || 0) + '</span>';
+    if (withAliases > own) {
+        h += ' / <span title="Entity + aliases mentions">' + withAliases + '</span>';
+    }
+    if (hasSubBrands && total > withAliases) {
+        h += ' / <span title="Entity + aliases + sub-brands + their aliases" style="font-weight:600;">' + total + '</span>';
+    }
+    h += ' mentions</span>';
+    return h;
+}
+
+async function loadProject() {
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID);
+    if (resp && resp.ok) {
+        projectData = await resp.json();
+    }
+}
+
+async function loadCompetitors() {
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/');
+    if (resp && resp.ok) {
+        var data = await resp.json();
+        competitors = data.competitors || [];
+        brandInfo = data.brand || null;
+    }
+}
+
+async function loadBrandSubBrands() {
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/brand-sub-brands');
+    if (resp && resp.ok) {
+        brandSubBrands = await resp.json();
+    }
+}
+
+async function loadCompetitorSubBrands(compName) {
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/' + encodeURIComponent(compName) + '/sub-brands');
+    if (resp && resp.ok) {
+        competitorSubBrands[compName] = await resp.json();
+    }
+}
+
+async function loadAllCompetitorSubBrands() {
+    var promises = competitors.map(function(c) { return loadCompetitorSubBrands(c.name); });
+    await Promise.all(promises);
+}
+
+async function loadDiscovered() {
+    var url = '/api/v1/projects/' + PROJECT_ID + '/competitors/discovered';
+    var params = [];
+    if (statusFilter) params.push('status=' + statusFilter);
+    if (searchQuery) params.push('search=' + encodeURIComponent(searchQuery));
+    params.push('limit=' + PAGE_SIZE);
+    params.push('offset=' + (discoveredPage * PAGE_SIZE));
+    url += '?' + params.join('&');
+
+    var resp = await apiFetch(url);
+    if (resp && resp.ok) {
+        var data = await resp.json();
+        discovered = data.items || [];
+        discoveredTotal = data.total || 0;
+    }
+}
+
+async function loadSuggestedCount() {
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/discovered?suggested_only=true&limit=1&offset=0');
+    if (resp && resp.ok) {
+        var data = await resp.json();
+        suggestedTotal = data.total || 0;
+    }
+}
+
+async function init() {
+    try {
+        await loadProject();
+        // Sync stale entity statuses (fix entities that are competitors/sub-brands but not "promoted")
+        await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/sync-statuses', { method: 'POST' });
+        await Promise.all([loadCompetitors(), loadDiscovered(), loadBrandSubBrands(), loadSuggestedCount()]);
+        await loadAllCompetitorSubBrands();
+        render();
+    } catch (err) {
+        console.error('[competitors] init failed:', err);
+        var app = document.getElementById('competitorsApp');
+        if (app) app.innerHTML = '<div class="empty-state"><p>Error loading competitors: ' + (err.message || err) + '</p></div>';
+    }
+}
+
+function render() {
+    var app = document.getElementById('competitorsApp');
+    var projectName = projectData ? projectData.name : 'Project ' + PROJECT_ID;
+
+    var html = '';
+
+    // Context bar
+    html += '<div class="llm-dash__context-bar">';
+    html += '<div style="display:flex;align-items:center;gap:1rem;">';
+    html += '<a href="/project/' + PROJECT_ID + '" class="back-link">';
+    html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>';
+    html += 'Back</a>';
+    html += '<span class="llm-dash__project-name">' + escapeHtml(projectName) + '</span>';
+    html += '</div>';
+    html += '<div style="display:flex;gap:0.5rem;">';
+    html += '<a href="/project/' + PROJECT_ID + '/llm-dashboard" class="btn btn-sm btn-secondary">LLM Dashboard</a>';
+    html += '<a href="/project/' + PROJECT_ID + '/prompts" class="btn btn-sm btn-secondary">Prompts</a>';
+    html += '</div>';
+    html += '</div>';
+
+    // Two-column grid
+    html += '<div class="competitors-grid">';
+
+    // Left column — Managed competitors
+    html += '<div class="competitors-section">';
+
+    // --- Brand section with mentions and aliases ---
+    var brandName = projectData ? (projectData.brand_name || projectData.name) : 'Brand';
+    var totalSubBrands = brandSubBrands.length;
+    competitors.forEach(function(c) { totalSubBrands += (competitorSubBrands[c.name] || []).length; });
+
+    // Brand card with mention count and aliases
+    html += '<div class="competitor-card" style="border-left:3px solid var(--accent);background:var(--bg-alt,rgba(99,102,241,0.05));">';
+    html += '<div style="flex:1;">';
+    html += '<span class="competitor-card__name" style="font-size:1rem;">' + escapeHtml(brandName) + '</span>';
+    if (brandInfo) {
+        html += renderMentionBadges(brandInfo.entity_mention_count, brandInfo.entity_mention_count_with_aliases, brandInfo.entity_mention_count_total, brandSubBrands.length > 0);
+    }
+    if (brandInfo && brandInfo.aliases && brandInfo.aliases.length > 0) {
+        html += '<div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px;">Aliases: ' + brandInfo.aliases.map(escapeHtml).join(', ') + '</div>';
+    }
+    if (brandInfo && brandInfo.entity_aliases && brandInfo.entity_aliases.length > 0) {
+        html += '<div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px;">';
+        brandInfo.entity_aliases.forEach(function(a) {
+            html += '<span style="display:inline-flex;align-items:center;gap:2px;background:var(--bg-alt,rgba(0,0,0,0.05));padding:1px 6px;border-radius:3px;margin:1px 2px;">';
+            html += escapeHtml(a.entity_name);
+            if (a.mention_count > 0) html += ' <span style="opacity:0.6;">(' + a.mention_count + ')</span>';
+            html += '<button onclick="removeAlias(\'' + escapeHtml(a.entity_name).replace(/\x27/g, "\\\'") + '\')" style="background:none;border:none;cursor:pointer;color:var(--danger);font-size:0.7rem;padding:0 2px;" title="Remove alias">✕</button>';
+            html += '</span>';
+        });
+        html += ' <button class="btn btn-sm" style="color:var(--danger);font-size:0.7rem;padding:1px 6px;" onclick="resetEntityAliases(\'' + escapeJsString(escapeHtml(brandName)) + '\',' + brandInfo.entity_aliases.length + ')" title="Release all aliases">Reset aliases (' + brandInfo.entity_aliases.length + ')</button>';
+        html += '</div>';
+    }
+    html += '</div>';
+    html += '</div>';
+
+    // Sub-brands header
+    html += '<div class="competitors-section__title" style="margin-top:0.5rem;">';
+    html += '<span>Sub-Brands (' + brandSubBrands.length + ')</span>';
+    if (totalSubBrands > 0) {
+        html += ' <button class="btn btn-sm" style="color:var(--danger);font-size:0.7rem;margin-left:0.5rem;" onclick="resetAllSubBrands()" title="Remove all sub-brands and return entities to discovered">Reset All (' + totalSubBrands + ')</button>';
+    }
+    html += '</div>';
+
+    if (brandSubBrands.length > 0) {
+        for (var sb = 0; sb < brandSubBrands.length; sb++) {
+            var bsb = brandSubBrands[sb];
+            html += '<div class="competitor-card" style="border-left:3px solid var(--accent);margin-left:0.5rem;">';
+            html += '<div style="flex:1;">';
+            html += '<span class="competitor-card__name">' + escapeHtml(bsb.name) + '</span>';
+            html += renderMentionBadges(bsb.entity_mention_count, bsb.entity_mention_count_with_aliases, 0, false);
+            if (bsb.aliases && bsb.aliases.length > 0) {
+                html += '<div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px;">';
+                bsb.aliases.forEach(function(a) {
+                    html += '<span style="display:inline-flex;align-items:center;gap:2px;background:var(--bg-alt,rgba(0,0,0,0.05));padding:1px 6px;border-radius:3px;margin:1px 2px;">';
+                    html += escapeHtml(a.entity_name);
+                    if (a.mention_count > 0) html += ' <span style="opacity:0.6;">(' + a.mention_count + ')</span>';
+                    html += '<button onclick="removeAlias(\'' + escapeHtml(a.entity_name).replace(/\x27/g, "\\\'") + '\')" style="background:none;border:none;cursor:pointer;color:var(--danger);font-size:0.7rem;padding:0 2px;" title="Remove alias">✕</button>';
+                    html += '</span>';
+                });
+                html += ' <button class="btn btn-sm" style="color:var(--danger);font-size:0.65rem;padding:1px 6px;" onclick="resetEntityAliases(\'' + escapeJsString(escapeHtml(bsb.name)) + '\',' + bsb.aliases.length + ')" title="Release all aliases">Reset aliases (' + bsb.aliases.length + ')</button>';
+                html += '</div>';
+            }
+            html += '</div>';
+            html += '<select class="parent-select" onchange="moveSubBrand(\'' + escapeJsString(escapeHtml(bsb.name)) + '\',\'' + escapeJsString(escapeHtml(brandName)) + '\', this.value)">';
+            html += '<option value="">↔ Move…</option>';
+            for (var mi = 0; mi < competitors.length; mi++) {
+                html += '<option value="' + escapeHtml(competitors[mi].name) + '">' + escapeHtml(competitors[mi].name) + '</option>';
+            }
+            html += '</select>';
+            html += '<button class="competitor-card__remove" onclick="removeBrandSubBrand(\'' + escapeJsString(escapeHtml(bsb.name)) + '\')" title="Remove">';
+            html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+            html += '</button>';
+            html += '</div>';
+        }
+    }
+
+    html += '<div class="competitor-add-form">';
+    html += '<input type="text" class="form-input" id="brandSubBrandInput" placeholder="Add brand sub-brand..." maxlength="255" onkeydown="if(event.key===\'Enter\')addBrandSubBrand()">';
+    html += '<input type="text" class="form-input" id="brandSubBrandAliases" placeholder="Aliases (comma-separated)" maxlength="500" style="max-width:200px;">';
+    html += '<button class="btn btn-sm btn-accent" onclick="addBrandSubBrand()">Add</button>';
+    html += '</div>';
+
+    html += '<hr style="margin:1rem 0;border:0;border-top:1px solid var(--border);">';
+
+    // --- Competitors section ---
+    html += '<div class="competitors-section__title">';
+    html += '<span>Competitors (' + competitors.length + ')</span>';
+    html += '</div>';
+
+    if (competitors.length === 0) {
+        html += '<div class="entity-empty">No competitors added yet</div>';
+    } else {
+        for (var i = 0; i < competitors.length; i++) {
+            var c = competitors[i];
+            var cSubs = competitorSubBrands[c.name] || [];
+            html += '<div class="competitor-card">';
+            html += '<div style="flex:1;">';
+            html += '<span class="competitor-card__name">' + escapeHtml(c.name) + '</span>';
+            html += renderMentionBadges(c.entity_mention_count, c.entity_mention_count_with_aliases, c.entity_mention_count_total, (cSubs.length > 0));
+            if (c.aliases && c.aliases.length > 0) {
+                html += '<div style="font-size:0.75rem;color:var(--text-muted);margin-top:2px;">';
+                c.aliases.forEach(function(a) {
+                    html += '<span style="display:inline-flex;align-items:center;gap:2px;background:var(--bg-alt,rgba(0,0,0,0.05));padding:1px 6px;border-radius:3px;margin:1px 2px;">';
+                    html += escapeHtml(a.entity_name);
+                    if (a.mention_count > 0) html += ' <span style="opacity:0.6;">(' + a.mention_count + ')</span>';
+                    html += '<button onclick="removeAlias(\'' + escapeHtml(a.entity_name).replace(/\x27/g, "\\\'") + '\')" style="background:none;border:none;cursor:pointer;color:var(--danger);font-size:0.7rem;padding:0 2px;" title="Remove alias">✕</button>';
+                    html += '</span>';
+                });
+                html += ' <button class="btn btn-sm" style="color:var(--danger);font-size:0.7rem;padding:1px 6px;" onclick="resetEntityAliases(\'' + escapeJsString(escapeHtml(c.name)) + '\',' + c.aliases.length + ')" title="Release all aliases">Reset aliases (' + c.aliases.length + ')</button>';
+                html += '</div>';
+            }
+            html += '</div>';
+            html += '<div class="competitor-card__meta" style="display:flex;gap:4px;align-items:center;">';
+            // Merge into... dropdown
+            var cNameEsc = escapeJsString(escapeHtml(c.name));
+            html += '<select class="parent-select" style="font-size:0.75rem;" onchange="if(this.value)mergeBrand(\'' + cNameEsc + '\',this.value);this.selectedIndex=0;">';
+            html += '<option value="">⊕ Merge into…</option>';
+            html += '<option value="' + escapeHtml(brandName) + '">' + escapeHtml(brandName) + ' (brand)</option>';
+            for (var mi2 = 0; mi2 < competitors.length; mi2++) {
+                if (competitors[mi2].name !== c.name) {
+                    html += '<option value="' + escapeHtml(competitors[mi2].name) + '">' + escapeHtml(competitors[mi2].name) + '</option>';
+                }
+            }
+            html += '</select>';
+            html += '<button class="competitor-card__remove" onclick="removeCompetitor(\'' + cNameEsc + '\')" title="Remove">';
+            html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+            html += '</button>';
+            html += '</div>';
+            html += '</div>';
+
+            // Competitor sub-brands
+            if (cSubs.length > 0) {
+                for (var cs = 0; cs < cSubs.length; cs++) {
+                    html += '<div class="competitor-card" style="border-left:3px solid var(--border);margin-left:1.5rem;padding:0.5rem 0.75rem;">';
+                    html += '<div style="flex:1;">';
+                    html += '<span style="font-size:0.85rem;">' + escapeHtml(cSubs[cs].name) + '</span>';
+                    html += renderMentionBadges(cSubs[cs].entity_mention_count, cSubs[cs].entity_mention_count_with_aliases, 0, false);
+                    if (cSubs[cs].aliases && cSubs[cs].aliases.length > 0) {
+                        html += '<div style="font-size:0.7rem;color:var(--text-muted);margin-top:2px;">';
+                        cSubs[cs].aliases.forEach(function(a) {
+                            html += '<span style="display:inline-flex;align-items:center;gap:2px;background:var(--bg-alt,rgba(0,0,0,0.05));padding:1px 6px;border-radius:3px;margin:1px 2px;">';
+                            html += escapeHtml(a.entity_name);
+                            if (a.mention_count > 0) html += ' <span style="opacity:0.6;">(' + a.mention_count + ')</span>';
+                            html += '<button onclick="removeAlias(\'' + escapeHtml(a.entity_name).replace(/\x27/g, "\\\'") + '\')" style="background:none;border:none;cursor:pointer;color:var(--danger);font-size:0.7rem;padding:0 2px;" title="Remove alias">✕</button>';
+                            html += '</span>';
+                        });
+                        html += ' <button class="btn btn-sm" style="color:var(--danger);font-size:0.65rem;padding:1px 6px;" onclick="resetEntityAliases(\'' + escapeJsString(escapeHtml(cSubs[cs].name)) + '\',' + cSubs[cs].aliases.length + ')" title="Release all aliases">Reset aliases (' + cSubs[cs].aliases.length + ')</button>';
+                        html += '</div>';
+                    }
+                    html += '</div>';
+                    html += '<select class="parent-select" onchange="moveSubBrand(\'' + escapeJsString(escapeHtml(cSubs[cs].name)) + '\',\'' + escapeJsString(escapeHtml(c.name)) + '\', this.value)">';
+                    html += '<option value="">↔ Move…</option>';
+                    html += '<option value="' + escapeHtml(brandName) + '">' + escapeHtml(brandName) + '</option>';
+                    for (var mi = 0; mi < competitors.length; mi++) {
+                        if (competitors[mi].name !== c.name) {
+                            html += '<option value="' + escapeHtml(competitors[mi].name) + '">' + escapeHtml(competitors[mi].name) + '</option>';
+                        }
+                    }
+                    html += '</select>';
+                    html += '<button class="competitor-card__remove" onclick="removeCompSubBrand(\'' + escapeJsString(escapeHtml(c.name)) + '\',\'' + escapeJsString(escapeHtml(cSubs[cs].name)) + '\')" title="Remove">';
+                    html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+                    html += '</button>';
+                    html += '</div>';
+                }
+            }
+            // Add sub-brand form (inline)
+            html += '<div class="competitor-add-form" style="margin-left:1.5rem;padding:0.25rem 0;">';
+            html += '<input type="text" class="form-input" style="font-size:0.8rem;" id="compSub_' + i + '" placeholder="Add sub-brand..." maxlength="255" onkeydown="if(event.key===\'Enter\')addCompSubBrand(\'' + escapeJsString(escapeHtml(c.name)) + '\',' + i + ')">';
+            html += '<button class="btn btn-sm btn-secondary" style="font-size:0.75rem;" onclick="addCompSubBrand(\'' + escapeJsString(escapeHtml(c.name)) + '\',' + i + ')">+Sub</button>';
+            html += '</div>';
+        }
+    }
+
+    // Add competitor form
+    html += '<div class="competitor-add-form">';
+    html += '<input type="text" class="form-input" id="newCompetitorInput" placeholder="Add competitor..." maxlength="255" onkeydown="if(event.key===\'Enter\')addCompetitor()">';
+    html += '<button class="btn btn-sm btn-accent" onclick="addCompetitor()">Add</button>';
+    html += '</div>';
+
+    html += '</div>'; // end left column
+
+    // Right column — Discovered entities
+    html += '<div class="competitors-section">';
+    html += '<div class="competitors-section__title">';
+    html += '<span>Discovered Entities (' + discoveredTotal + ')</span>';
+    html += '</div>';
+
+    // Toolbar
+    html += '<div class="entity-toolbar">';
+    html += '<select class="form-input" style="max-width:150px;" onchange="statusFilter=this.value;discoveredPage=0;loadDiscovered().then(render)">';
+    html += '<option value="">Pending + Confirmed</option>';
+    html += '<option value="pending"' + (statusFilter === 'pending' ? ' selected' : '') + '>Pending</option>';
+    html += '<option value="confirmed"' + (statusFilter === 'confirmed' ? ' selected' : '') + '>Confirmed</option>';
+    html += '<option value="rejected"' + (statusFilter === 'rejected' ? ' selected' : '') + '>Rejected</option>';
+    html += '<option value="promoted"' + (statusFilter === 'promoted' ? ' selected' : '') + '>Promoted</option>';
+    html += '</select>';
+    html += '<input type="text" class="form-input" style="max-width:180px;" placeholder="Search entities..." value="' + escapeHtml(searchQuery) + '" id="entitySearchInput" onkeydown="if(event.key===\'Enter\'){searchQuery=this.value.trim();discoveredPage=0;loadDiscovered().then(render)}" onblur="if(this.value.trim()!==searchQuery){searchQuery=this.value.trim();discoveredPage=0;loadDiscovered().then(render)}">';
+    if (searchQuery) {
+        html += '<button class="btn btn-sm btn-secondary" onclick="searchQuery=\'\';discoveredPage=0;loadDiscovered().then(render)" title="Clear search" style="padding:2px 8px;">✕</button>';
+    }
+
+    var verifiableEntities = discovered.filter(function(e) { return e.status === 'pending' || e.status === 'confirmed'; });
+    if (verifiableEntities.length > 0) {
+        var pendingCount = discovered.filter(function(e) { return e.status === 'pending'; }).length;
+        var label = statusFilter === 'confirmed' ? 'Re-Verify All' : (statusFilter === 'pending' ? 'Verify All' : 'Verify All');
+        html += '<button class="btn btn-sm btn-accent" onclick="verifyAll()" ' + (verifying ? 'disabled' : '') + '>';
+        html += (verifying ? '<span class="spinner"></span> ' : '') + label + ' (' + verifiableEntities.length + ')';
+        html += '</button>';
+    }
+    var unclassified = discovered.filter(function(e) { return (e.status === 'pending' || e.status === 'confirmed') && !e.suggested_parent; });
+    if (unclassified.length > 0) {
+        html += '<button class="btn btn-sm btn-secondary" onclick="detectSubBrands()" id="detectSubBrandsBtn">';
+        html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> ';
+        html += 'Detect Sub-Brands</button>';
+    }
+    if (suggestedTotal > 0) {
+        html += '<button class="btn btn-sm btn-accent" onclick="acceptAllSubBrands()" id="acceptAllSubBrandsBtn">';
+        html += 'Accept All Sub-Brands (' + suggestedTotal + ')</button>';
+    }
+    if (statusFilter === 'rejected' && discovered.length > 0) {
+        html += '<button class="btn btn-sm" style="color:var(--danger);font-size:0.75rem;" onclick="unrejectAll()" title="Reset all rejected entities back to pending">↩ Unreject All (' + discoveredTotal + ')</button>';
+    }
+    html += '</div>';
+
+    if (discovered.length === 0) {
+        html += '<div class="entity-empty">No discovered entities yet.<br><span style="font-size:0.8rem;">Entities will appear after LLM collection runs.</span></div>';
+    } else {
+        for (var j = 0; j < discovered.length; j++) {
+            var e = discovered[j];
+            html += '<div class="entity-card">';
+            html += '<div class="entity-card__info">';
+            html += '<div class="entity-card__name">' + escapeHtml(e.entity_name) + '</div>';
+            html += '<div class="entity-card__meta">';
+            html += e.mention_count + ' mentions';
+            html += ' &middot; first: ' + e.first_seen;
+            html += ' &middot; last: ' + e.last_seen;
+            html += ' &middot; <span class="badge-' + e.status + '">' + e.status + '</span>';
+            if (e.verified_by) {
+                html += ' &middot; verified by ' + e.verified_by;
+            }
+            if (e.suggested_parent) {
+                html += ' &middot; <span style="color:var(--accent);">sub-brand of </span>';
+                html += '<select class="parent-select" onchange="changeParent(\'' + escapeJsString(escapeHtml(e.entity_name)) + '\', this.value)">';
+                var brandName = projectData ? (projectData.brand_name || projectData.name) : '';
+                var allParents = [brandName].concat(competitors.map(function(c) { return c.name; }));
+                for (var pi = 0; pi < allParents.length; pi++) {
+                    var pName = allParents[pi];
+                    html += '<option value="' + escapeHtml(pName) + '"' + (pName === e.suggested_parent ? ' selected' : '') + '>' + escapeHtml(pName) + '</option>';
+                }
+                html += '<option value="">— clear —</option>';
+                html += '</select>';
+            }
+            html += '</div>';
+            if (e.llm_explanation) {
+                html += '<div style="font-size:0.78rem;color:var(--text-muted);margin-top:2px;font-style:italic;">💬 ' + escapeHtml(e.llm_explanation) + '</div>';
+            }
+            html += '</div>';
+            html += '<div class="entity-card__actions">';
+            var enEsc = escapeJsString(escapeHtml(e.entity_name));
+            if (e.status === 'pending' || e.status === 'confirmed') {
+                html += '<button class="btn btn-sm btn-accent" onclick="promoteEntity(\'' + enEsc + '\')" title="Add to competitors">+ Competitor</button>';
+                // Sub-brand dropdown
+                html += '<select class="btn btn-sm btn-secondary" style="font-size:0.75rem;padding:2px 6px;cursor:pointer;" onchange="if(this.value)addAsSubBrand(\'' + enEsc + '\',this.value);this.selectedIndex=0;">';
+                html += '<option value="">+ Sub-brand of…</option>';
+                var brandName = projectData ? (projectData.brand_name || projectData.name) : '';
+                html += '<option value="' + escapeHtml(brandName) + '">' + escapeHtml(brandName) + ' (brand)</option>';
+                for (var ci = 0; ci < competitors.length; ci++) {
+                    html += '<option value="' + escapeHtml(competitors[ci].name) + '">' + escapeHtml(competitors[ci].name) + '</option>';
+                }
+                html += '</select>';
+                // Alias dropdown
+                html += renderAliasDropdown(enEsc);
+                html += '<button class="btn btn-sm btn-secondary" onclick="verifySingle(\'' + enEsc + '\')" title="Verify with LLM">' + (e.verified_by ? 'Re-Verify' : 'Verify') + '</button>';
+                html += '<button class="btn btn-sm" style="color:var(--danger);" onclick="rejectEntity(\'' + enEsc + '\')" title="Reject">Reject</button>';
+            }
+            if (e.status === 'rejected') {
+                html += '<button class="btn btn-sm btn-accent" onclick="promoteEntity(\'' + enEsc + '\')" title="Promote as competitor">+ Competitor</button>';
+                html += '<select class="btn btn-sm btn-secondary" style="font-size:0.75rem;padding:2px 6px;cursor:pointer;" onchange="if(this.value)addAsSubBrand(\'' + enEsc + '\',this.value);this.selectedIndex=0;">';
+                html += '<option value="">+ Sub-brand of…</option>';
+                var brandName2 = projectData ? (projectData.brand_name || projectData.name) : '';
+                html += '<option value="' + escapeHtml(brandName2) + '">' + escapeHtml(brandName2) + ' (brand)</option>';
+                for (var ci2 = 0; ci2 < competitors.length; ci2++) {
+                    html += '<option value="' + escapeHtml(competitors[ci2].name) + '">' + escapeHtml(competitors[ci2].name) + '</option>';
+                }
+                html += '</select>';
+                // Alias dropdown
+                html += renderAliasDropdown(enEsc);
+                html += '<button class="btn btn-sm btn-secondary" onclick="verifySingle(\'' + enEsc + '\')" title="Re-verify with LLM">Re-Verify</button>';
+            }
+            html += '</div>';
+            html += '</div>';
+        }
+
+        // Pagination
+        var totalPages = Math.ceil(discoveredTotal / PAGE_SIZE);
+        if (totalPages > 1) {
+            html += '<div class="entity-pagination">';
+            html += '<button class="btn btn-sm btn-secondary" onclick="goToPage(0)" ' + (discoveredPage === 0 ? 'disabled' : '') + '>&laquo;</button>';
+            html += '<button class="btn btn-sm btn-secondary" onclick="goToPage(' + (discoveredPage - 1) + ')" ' + (discoveredPage === 0 ? 'disabled' : '') + '>&lsaquo;</button>';
+
+            // Show page numbers with ellipsis
+            var startPage = Math.max(0, discoveredPage - 2);
+            var endPage = Math.min(totalPages - 1, discoveredPage + 2);
+            if (startPage > 0) {
+                html += '<button class="btn btn-sm btn-secondary" onclick="goToPage(0)">1</button>';
+                if (startPage > 1) html += '<span style="padding:0 0.25rem;color:var(--text-muted);">&hellip;</span>';
+            }
+            for (var p = startPage; p <= endPage; p++) {
+                html += '<button class="btn btn-sm ' + (p === discoveredPage ? 'btn-accent' : 'btn-secondary') + '" onclick="goToPage(' + p + ')">' + (p + 1) + '</button>';
+            }
+            if (endPage < totalPages - 1) {
+                if (endPage < totalPages - 2) html += '<span style="padding:0 0.25rem;color:var(--text-muted);">&hellip;</span>';
+                html += '<button class="btn btn-sm btn-secondary" onclick="goToPage(' + (totalPages - 1) + ')">' + totalPages + '</button>';
+            }
+
+            html += '<button class="btn btn-sm btn-secondary" onclick="goToPage(' + (discoveredPage + 1) + ')" ' + (discoveredPage >= totalPages - 1 ? 'disabled' : '') + '>&rsaquo;</button>';
+            html += '<button class="btn btn-sm btn-secondary" onclick="goToPage(' + (totalPages - 1) + ')" ' + (discoveredPage >= totalPages - 1 ? 'disabled' : '') + '>&raquo;</button>';
+            html += '<span style="font-size:0.8rem;color:var(--text-muted);margin-left:0.5rem;">' + (discoveredPage * PAGE_SIZE + 1) + '–' + Math.min((discoveredPage + 1) * PAGE_SIZE, discoveredTotal) + ' of ' + discoveredTotal + '</span>';
+            html += '</div>';
+        }
+    }
+
+    html += '</div>'; // end right column
+    html += '</div>'; // end grid
+
+    app.innerHTML = html;
+}
+
+async function addCompetitor() {
+    var input = document.getElementById('newCompetitorInput');
+    var name = input.value.trim();
+    if (!name) return;
+
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/', {
+        method: 'POST',
+        body: JSON.stringify({ name: name }),
+    });
+    if (resp && resp.ok) {
+        input.value = '';
+        showToast('Competitor added: ' + name);
+        await Promise.all([loadCompetitors(), loadDiscovered()]);
+        render();
+    } else {
+        showToast('Failed to add competitor', 'error');
+    }
+}
+
+async function removeCompetitor(name) {
+    if (!confirm('Remove competitor "' + name + '"?')) return;
+
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/' + encodeURIComponent(name), {
+        method: 'DELETE',
+    });
+    if (resp && resp.ok) {
+        showToast('Competitor removed: ' + name);
+        await loadCompetitors();
+        render();
+    } else {
+        showToast('Failed to remove competitor', 'error');
+    }
+}
+
+// --- Brand sub-brand CRUD ---
+
+async function addBrandSubBrand() {
+    var nameInput = document.getElementById('brandSubBrandInput');
+    var aliasInput = document.getElementById('brandSubBrandAliases');
+    var name = nameInput.value.trim();
+    if (!name) return;
+    var aliases = aliasInput.value.split(',').map(function(a) { return a.trim(); }).filter(Boolean);
+
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/brand-sub-brands', {
+        method: 'POST',
+        body: JSON.stringify({ name: name, aliases: aliases }),
+    });
+    if (resp && resp.ok) {
+        nameInput.value = '';
+        aliasInput.value = '';
+        showToast('Brand sub-brand added: ' + name);
+        await loadBrandSubBrands();
+        render();
+    } else {
+        showToast('Failed to add brand sub-brand', 'error');
+    }
+}
+
+async function removeBrandSubBrand(name) {
+    if (!confirm('Remove brand sub-brand "' + name + '"?')) return;
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/brand-sub-brands/' + encodeURIComponent(name), {
+        method: 'DELETE',
+    });
+    if (resp && resp.ok) {
+        showToast('Brand sub-brand removed: ' + name);
+        await loadBrandSubBrands();
+        render();
+    } else {
+        showToast('Failed to remove brand sub-brand', 'error');
+    }
+}
+
+// --- Competitor sub-brand CRUD ---
+
+async function addCompSubBrand(compName, idx) {
+    var input = document.getElementById('compSub_' + idx);
+    var name = input.value.trim();
+    if (!name) return;
+
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/' + encodeURIComponent(compName) + '/sub-brands', {
+        method: 'POST',
+        body: JSON.stringify({ name: name, aliases: [] }),
+    });
+    if (resp && resp.ok) {
+        input.value = '';
+        showToast('Sub-brand added to ' + compName + ': ' + name);
+        await loadCompetitorSubBrands(compName);
+        render();
+    } else {
+        showToast('Failed to add sub-brand', 'error');
+    }
+}
+
+async function removeCompSubBrand(compName, subName) {
+    if (!confirm('Remove sub-brand "' + subName + '" from ' + compName + '?')) return;
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/' + encodeURIComponent(compName) + '/sub-brands/' + encodeURIComponent(subName), {
+        method: 'DELETE',
+    });
+    if (resp && resp.ok) {
+        showToast('Sub-brand removed: ' + subName);
+        await loadCompetitorSubBrands(compName);
+        render();
+    } else {
+        showToast('Failed to remove sub-brand', 'error');
+    }
+}
+
+async function promoteEntity(name) {
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/promote', {
+        method: 'POST',
+        body: JSON.stringify({ entities: [name] }),
+    });
+    if (resp && resp.ok) {
+        showToast('Promoted to competitor: ' + name);
+        await Promise.all([loadCompetitors(), loadDiscovered()]);
+        render();
+    } else {
+        showToast('Failed to promote entity', 'error');
+    }
+}
+
+async function rejectEntity(name) {
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/reject', {
+        method: 'POST',
+        body: JSON.stringify({ entities: [name] }),
+    });
+    if (resp && resp.ok) {
+        showToast('Entity rejected: ' + name);
+        await loadDiscovered();
+        render();
+    } else {
+        showToast('Failed to reject entity', 'error');
+    }
+}
+
+async function verifySingle(name) {
+    await doVerify([name]);
+}
+
+async function verifyAll() {
+    var verifiable = discovered.filter(function(e) { return e.status === 'pending' || e.status === 'confirmed'; });
+    if (verifiable.length === 0) {
+        showToast('No entities to verify', 'warning');
+        return;
+    }
+    var names = verifiable.map(function(e) { return e.entity_name; });
+    await doVerify(names);
+}
+
+// Global state for verify modal
+var verifyResults = [];  // raw LLM results
+var verifyApplied = {};  // entity -> action applied (for visual feedback)
+
+async function doVerify(entities) {
+    verifying = true;
+    verifyResults = [];
+    verifyApplied = {};
+    render();
+
+    // Show modal with progress
+    document.getElementById('verifyModal').style.display = 'flex';
+    document.getElementById('verifyModalBody').innerHTML =
+        '<div class="verify-progress"><span class="spinner"></span> Verifying ' + entities.length + ' entities via LLM...</div>';
+
+    try {
+        var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/verify', {
+            method: 'POST',
+            body: JSON.stringify({ entities: entities }),
+        });
+
+        if (resp && resp.ok) {
+            var data = await resp.json();
+            verifyResults = data.results || [];
+            renderVerifyModal();
+            verifying = false;
+            render();
+        } else {
+            var errText = resp ? await resp.text() : 'Unknown error';
+            document.getElementById('verifyModalBody').innerHTML =
+                '<p style="color:var(--danger);">Verification failed: ' + escapeHtml(errText) + '</p>';
+            showToast('Verification failed', 'error');
+            verifying = false;
+            render();
+        }
+    } catch (err) {
+        document.getElementById('verifyModalBody').innerHTML =
+            '<p style="color:var(--danger);">Error: ' + escapeHtml(err.toString()) + '</p>';
+        showToast('Verification error: ' + err, 'error');
+        verifying = false;
+        render();
+    }
+}
+
+function renderVerifyModal() {
+    if (verifyResults.length === 0) {
+        document.getElementById('verifyModalBody').innerHTML = '<p>No results returned.</p>';
+        return;
+    }
+
+    var html = '';
+    var pendingCount = 0;
+    for (var i = 0; i < verifyResults.length; i++) {
+        var r = verifyResults[i];
+        var applied = verifyApplied[r.entity];
+        var canAdd = r.is_competitor || (r.is_sub_brand && r.parent_brand);
+        var entityEsc = escapeJsString(escapeHtml(r.entity));
+
+        html += '<div class="verify-row" id="verify-row-' + i + '" style="border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:8px;';
+        if (applied) html += 'opacity:0.45;';
+        html += '">';
+
+        // Top: entity name + LLM badge
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">';
+        html += '<strong style="font-size:0.95rem;">' + escapeHtml(r.entity) + '</strong>';
+        html += '<div style="display:flex;gap:6px;align-items:center;">';
+        if (r.is_alias && r.alias_of) {
+            html += '<span class="badge-confirmed" style="background:#0891b2;color:#fff;font-size:0.75rem;padding:2px 8px;border-radius:4px;">';
+            html += 'Alias of ' + escapeHtml(r.alias_of) + '</span>';
+        } else if (r.is_sub_brand && r.parent_brand) {
+            html += '<span class="badge-confirmed" style="background:var(--accent);color:#fff;font-size:0.75rem;padding:2px 8px;border-radius:4px;">';
+            html += 'Sub-brand of ' + escapeHtml(r.parent_brand) + '</span>';
+        } else if (r.is_competitor) {
+            html += '<span class="badge-confirmed" style="font-size:0.75rem;padding:2px 8px;border-radius:4px;">Competitor</span>';
+        } else {
+            html += '<span class="badge-rejected" style="font-size:0.75rem;padding:2px 8px;border-radius:4px;">Not a competitor</span>';
+        }
+        if (applied) {
+            var labelMap = { accept_and_add: '✅ Added', accept: '✅ Agreed', disagree: '⊘ Skipped' };
+            html += '<span style="font-size:0.75rem;font-weight:600;color:var(--text-muted);">' + (labelMap[applied] || applied) + '</span>';
+        }
+        html += '</div></div>';
+
+        // Explanation
+        if (r.explanation) {
+            html += '<div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:8px;">' + escapeHtml(r.explanation) + '</div>';
+        }
+
+        // Action buttons (only if not yet decided)
+        if (!applied) {
+            pendingCount++;
+            html += '<div style="display:flex;gap:6px;flex-wrap:wrap;">';
+
+            var canAddAlias = r.is_alias && r.alias_of;
+            var canAdd = r.is_competitor || (r.is_sub_brand && r.parent_brand);
+
+            if (canAddAlias) {
+                html += '<button class="btn btn-sm btn-accent" ';
+                html += 'onclick="applyVerifyAction(\'' + entityEsc + '\', \'accept_and_add\', ' + i + ')" ';
+                html += 'style="font-size:0.75rem;background:#0891b2;">Agree & Add Alias</button>';
+            } else if (canAdd) {
+                var addLabel = r.is_competitor ? 'Agree & Add Competitor' : 'Agree & Add Sub-Brand';
+                html += '<button class="btn btn-sm btn-accent" ';
+                html += 'onclick="applyVerifyAction(\'' + entityEsc + '\', \'accept_and_add\', ' + i + ')" ';
+                html += 'style="font-size:0.75rem;">' + addLabel + '</button>';
+            }
+
+            html += '<button class="btn btn-sm btn-secondary" ';
+            html += 'onclick="applyVerifyAction(\'' + entityEsc + '\', \'accept\', ' + i + ')" ';
+            html += 'style="font-size:0.75rem;">Agree</button>';
+
+            html += '<button class="btn btn-sm btn-secondary" ';
+            html += 'onclick="applyVerifyAction(\'' + entityEsc + '\', \'disagree\', ' + i + ')" ';
+            html += 'style="font-size:0.75rem;color:var(--danger);">Disagree</button>';
+
+            html += '</div>';
+        }
+
+        html += '</div>';
+    }
+
+    if (pendingCount === 0) {
+        html = '<div style="text-align:center;padding:12px 0;color:var(--text-muted);font-size:0.85rem;">All entities reviewed ✓</div>' + html;
+    }
+
+    document.getElementById('verifyModalBody').innerHTML = html;
+}
+
+async function applyVerifyAction(entity, action, idx) {
+    // Find the result for this entity
+    var r = verifyResults[idx];
+    if (!r) return;
+
+    // Disable buttons immediately via DOM
+    var row = document.getElementById('verify-row-' + idx);
+    if (row) {
+        var btns = row.querySelectorAll('button');
+        for (var b = 0; b < btns.length; b++) btns[b].disabled = true;
+        row.style.opacity = '0.45';
+    }
+
+    try {
+        var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/verify-apply', {
+            method: 'POST',
+            body: JSON.stringify({ decisions: [{
+                entity: r.entity,
+                action: action,
+                is_competitor: r.is_competitor,
+                is_sub_brand: r.is_sub_brand || false,
+                parent_brand: r.parent_brand || null,
+                is_alias: r.is_alias || false,
+                alias_of: r.alias_of || null,
+                explanation: r.explanation || '',
+            }] }),
+        });
+
+        if (resp && resp.ok) {
+            verifyApplied[r.entity] = action;
+            var labels = { accept_and_add: 'Added', accept: 'Agreed', disagree: 'Skipped' };
+            showToast(escapeHtml(r.entity) + ' — ' + labels[action]);
+            // Refresh data in background
+            await Promise.all([loadDiscovered(), loadSuggestedCount(), loadCompetitors()]);
+            await loadAllCompetitorSubBrands();
+            await loadBrandSubBrands();
+            render();
+
+            // Check if all entities are decided
+            var allDecided = verifyResults.every(function(vr) { return !!verifyApplied[vr.entity]; });
+            if (allDecided) {
+                closeVerifyModal();
+            } else {
+                renderVerifyModal();
+            }
+        } else {
+            var errText = resp ? await resp.text() : 'Unknown error';
+            showToast('Failed: ' + errText, 'error');
+            // Re-enable buttons
+            if (row) {
+                var btns2 = row.querySelectorAll('button');
+                for (var b2 = 0; b2 < btns2.length; b2++) btns2[b2].disabled = false;
+                row.style.opacity = '1';
+            }
+        }
+    } catch (err) {
+        showToast('Error: ' + err, 'error');
+        if (row) {
+            var btns3 = row.querySelectorAll('button');
+            for (var b3 = 0; b3 < btns3.length; b3++) btns3[b3].disabled = false;
+            row.style.opacity = '1';
+        }
+    }
+}
+
+function closeVerifyModal() {
+    document.getElementById('verifyModal').style.display = 'none';
+}
+
+// --- Pagination ---
+
+async function goToPage(page) {
+    var totalPages = Math.ceil(discoveredTotal / PAGE_SIZE);
+    if (page < 0) page = 0;
+    if (page >= totalPages) page = totalPages - 1;
+    discoveredPage = page;
+    await loadDiscovered();
+    render();
+    // Scroll to top of discovered section
+    var section = document.querySelector('.competitors-section:last-child');
+    if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// --- Reset all sub-brands ---
+
+async function resetAllSubBrands() {
+    if (!confirm('Remove ALL sub-brands and return them to discovered entities? This cannot be undone.')) return;
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/reset-sub-brands', {
+        method: 'POST',
+    });
+    if (resp && resp.ok) {
+        var data = await resp.json();
+        showToast(data.entities_restored + ' entities restored to discovered');
+        await Promise.all([loadBrandSubBrands(), loadDiscovered(), loadSuggestedCount()]);
+        await loadAllCompetitorSubBrands();
+        render();
+    } else {
+        showToast('Failed to reset sub-brands', 'error');
+    }
+}
+
+// --- Unreject all rejected entities ---
+
+async function unrejectAll() {
+    if (!confirm('Reset all rejected entities back to pending? They will appear in the pending list again.')) return;
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/unreject', {
+        method: 'POST',
+    });
+    if (resp && resp.ok) {
+        var data = await resp.json();
+        showToast(data.unrejected + ' entities returned to pending');
+        statusFilter = '';
+        discoveredPage = 0;
+        await loadDiscovered();
+        render();
+    } else {
+        showToast('Failed to unreject entities', 'error');
+    }
+}
+
+// --- Move sub-brand between parents ---
+
+async function moveSubBrand(subName, fromParent, toParent) {
+    if (!toParent) return;  // "Move…" placeholder selected
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/move-sub-brand', {
+        method: 'POST',
+        body: JSON.stringify({ name: subName, from_parent: fromParent, to_parent: toParent }),
+    });
+    if (resp && resp.ok) {
+        showToast(subName + ': ' + fromParent + ' → ' + toParent);
+        await Promise.all([loadBrandSubBrands(), loadCompetitors()]);
+        await loadAllCompetitorSubBrands();
+        render();
+    } else {
+        showToast('Failed to move sub-brand', 'error');
+    }
+}
+
+// --- Merge brand into another ---
+
+async function mergeBrand(source, target) {
+    if (!source || !target) return;
+    if (!confirm('Merge "' + source + '" (with all its aliases) into "' + target + '"?\n\n"' + source + '" will be removed from competitors and added as a sub-brand of "' + target + '".')) return;
+
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/merge-brand', {
+        method: 'POST',
+        body: JSON.stringify({ source: source, target: target }),
+    });
+    if (resp && resp.ok) {
+        var data = await resp.json();
+        showToast(source + ' merged into ' + target);
+        await Promise.all([loadCompetitors(), loadBrandSubBrands(), loadDiscovered()]);
+        await loadAllCompetitorSubBrands();
+        render();
+    } else {
+        var errText = resp ? await resp.text() : 'Unknown error';
+        showToast('Failed to merge: ' + errText, 'error');
+    }
+}
+
+// --- Change suggested parent ---
+
+async function changeParent(entityName, newParent) {
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/discovered/' + encodeURIComponent(entityName) + '/suggested-parent', {
+        method: 'PATCH',
+        body: JSON.stringify({ suggested_parent: newParent || null }),
+    });
+    if (resp && resp.ok) {
+        showToast(newParent ? entityName + ' → ' + newParent : entityName + ': parent cleared');
+        await Promise.all([loadDiscovered(), loadSuggestedCount()]);
+        render();
+    } else {
+        showToast('Failed to update parent', 'error');
+    }
+}
+
+// --- Sub-brand auto-detection ---
+
+async function detectSubBrands() {
+    var btn = document.getElementById('detectSubBrandsBtn');
+    if (btn) btn.disabled = true;
+    if (btn) btn.innerHTML = '<span class="spinner"></span> Detecting...';
+
+    try {
+        var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/detect-sub-brands', {
+            method: 'POST',
+        });
+        if (resp && resp.ok) {
+            var data = await resp.json();
+            var count = (data.suggestions || []).length;
+            showToast(count > 0 ? count + ' potential sub-brands detected' : 'No sub-brands detected');
+            await Promise.all([loadDiscovered(), loadSuggestedCount()]);
+            render();
+        } else {
+            showToast('Detection failed', 'error');
+        }
+    } catch (err) {
+        showToast('Detection error: ' + err, 'error');
+    }
+    if (btn) btn.disabled = false;
+}
+
+async function addAsSubBrand(entityName, parentName) {
+    return acceptSubBrandSuggestion(unescapeHtml(entityName), unescapeHtml(parentName));
+}
+
+async function acceptSubBrandSuggestion(entityName, parentName) {
+    // Determine if parent is the brand or a competitor
+    var brandName = projectData ? (projectData.brand_name || projectData.name) : '';
+    var isBrand = (parentName === brandName);
+
+    var url, body;
+    if (isBrand) {
+        url = '/api/v1/projects/' + PROJECT_ID + '/competitors/brand-sub-brands';
+        body = JSON.stringify({ name: entityName, aliases: [] });
+    } else {
+        url = '/api/v1/projects/' + PROJECT_ID + '/competitors/' + encodeURIComponent(parentName) + '/sub-brands';
+        body = JSON.stringify({ name: entityName, aliases: [] });
+    }
+
+    var resp = await apiFetch(url, { method: 'POST', body: body });
+    if (resp && resp.ok) {
+        showToast(entityName + ' added as sub-brand of ' + parentName);
+        await Promise.all([loadBrandSubBrands(), loadDiscovered(), loadSuggestedCount()]);
+        await loadAllCompetitorSubBrands();
+        render();
+    } else {
+        showToast('Failed to accept sub-brand', 'error');
+    }
+}
+
+async function acceptAllSubBrands() {
+    if (suggestedTotal === 0) {
+        showToast('No sub-brand suggestions to accept', 'warning');
+        return;
+    }
+
+    if (!confirm('Accept all ' + suggestedTotal + ' sub-brand suggestions?')) return;
+
+    var btn = document.getElementById('acceptAllSubBrandsBtn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Loading all suggested...'; }
+
+    // Fetch ALL suggested entities from server (not just current page)
+    var allSuggested = [];
+    try {
+        var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/discovered?suggested_only=true&limit=5000&offset=0');
+        if (resp && resp.ok) {
+            var data = await resp.json();
+            allSuggested = data.items || [];
+        }
+    } catch (err) {
+        showToast('Failed to load suggestions: ' + err, 'error');
+        if (btn) { btn.disabled = false; btn.innerHTML = 'Accept All Sub-Brands (' + suggestedTotal + ')'; }
+        return;
+    }
+
+    if (allSuggested.length === 0) {
+        showToast('No sub-brand suggestions found', 'warning');
+        if (btn) { btn.disabled = false; btn.innerHTML = 'Accept All Sub-Brands (' + suggestedTotal + ')'; }
+        return;
+    }
+
+    var accepted = 0;
+    var failed = 0;
+    var brandName = projectData ? (projectData.brand_name || projectData.name) : '';
+
+    for (var i = 0; i < allSuggested.length; i++) {
+        var e = allSuggested[i];
+        if (btn) btn.innerHTML = '<span class="spinner"></span> Accepting ' + (i + 1) + '/' + allSuggested.length + '...';
+
+        var isBrand = (e.suggested_parent === brandName);
+        var url, body;
+        if (isBrand) {
+            url = '/api/v1/projects/' + PROJECT_ID + '/competitors/brand-sub-brands';
+        } else {
+            url = '/api/v1/projects/' + PROJECT_ID + '/competitors/' + encodeURIComponent(e.suggested_parent) + '/sub-brands';
+        }
+        body = JSON.stringify({ name: e.entity_name, aliases: [] });
+
+        try {
+            var resp = await apiFetch(url, { method: 'POST', body: body });
+            if (resp && resp.ok) {
+                accepted++;
+            } else {
+                failed++;
+            }
+        } catch (err) {
+            failed++;
+        }
+    }
+
+    showToast(accepted + ' sub-brands accepted' + (failed > 0 ? ', ' + failed + ' failed' : ''));
+    await Promise.all([loadBrandSubBrands(), loadDiscovered(), loadSuggestedCount()]);
+    await loadAllCompetitorSubBrands();
+    render();
+}
+
+// --- Render alias-of dropdown (reusable for entity cards) ---
+
+function renderAliasDropdown(entityNameEsc) {
+    var h = '';
+    h += '<select class="btn btn-sm btn-secondary" style="font-size:0.75rem;padding:2px 6px;cursor:pointer;" onchange="if(this.value)addAsAlias(\'' + entityNameEsc + '\',this.value);this.selectedIndex=0;">';
+    h += '<option value="">+ Alias of…</option>';
+    var bName = projectData ? (projectData.brand_name || projectData.name) : '';
+    h += '<option value="' + escapeHtml(bName) + '">' + escapeHtml(bName) + ' (brand)</option>';
+    for (var ai = 0; ai < competitors.length; ai++) {
+        h += '<option value="' + escapeHtml(competitors[ai].name) + '">' + escapeHtml(competitors[ai].name) + '</option>';
+    }
+    // Sub-brands of brand
+    for (var si = 0; si < brandSubBrands.length; si++) {
+        h += '<option value="' + escapeHtml(brandSubBrands[si].name) + '">↳ ' + escapeHtml(brandSubBrands[si].name) + '</option>';
+    }
+    // Sub-brands of competitors
+    for (var ci = 0; ci < competitors.length; ci++) {
+        var csubs = competitorSubBrands[competitors[ci].name] || [];
+        for (var csi = 0; csi < csubs.length; csi++) {
+            h += '<option value="' + escapeHtml(csubs[csi].name) + '">↳ ' + escapeHtml(csubs[csi].name) + '</option>';
+        }
+    }
+    h += '</select>';
+    return h;
+}
+
+// --- Add entity as alias ---
+
+async function addAsAlias(entityName, targetName) {
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/set-alias', {
+        method: 'POST',
+        body: JSON.stringify({ entity_name: unescapeHtml(entityName), target_entity_name: unescapeHtml(targetName) }),
+    });
+    if (resp && resp.ok) {
+        showToast(entityName + ' added as alias of ' + targetName);
+        await Promise.all([loadCompetitors(), loadBrandSubBrands(), loadDiscovered()]);
+        await loadAllCompetitorSubBrands();
+        render();
+    } else {
+        var errText = resp ? await resp.text() : 'Unknown error';
+        showToast('Failed to add alias: ' + errText, 'error');
+    }
+}
+
+// --- Remove alias (entity-to-entity) ---
+
+async function removeAlias(entityName) {
+    if (!confirm('Remove alias "' + entityName + '"? It will return to discovered entities.')) return;
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/remove-alias', {
+        method: 'POST',
+        body: JSON.stringify({ entity_name: entityName }),
+    });
+    if (resp && resp.ok) {
+        showToast('Alias removed: ' + entityName);
+        await Promise.all([loadCompetitors(), loadBrandSubBrands(), loadDiscovered()]);
+        await loadAllCompetitorSubBrands();
+        render();
+    } else {
+        showToast('Failed to remove alias', 'error');
+    }
+}
+
+async function resetEntityAliases(entityName, aliasCount) {
+    if (!confirm('Reset all ' + aliasCount + ' alias(es) of "' + entityName + '"? They will return to discovered entities.')) return;
+    var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID + '/competitors/reset-entity-aliases', {
+        method: 'POST',
+        body: JSON.stringify({ entity_name: entityName }),
+    });
+    if (resp && resp.ok) {
+        var data = await resp.json();
+        showToast(data.aliases_released + ' alias(es) released from ' + entityName);
+        await Promise.all([loadCompetitors(), loadBrandSubBrands(), loadDiscovered()]);
+        await loadAllCompetitorSubBrands();
+        render();
+    } else {
+        showToast('Failed to reset aliases', 'error');
+    }
+}
+
+init();
+</script>
+{% endblock %}

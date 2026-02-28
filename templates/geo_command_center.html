@@ -1,0 +1,2727 @@
+{% extends "base.html" %}
+
+{% block title %}GEO Command Center — LLM Tracker{% endblock %}
+{% block page_title %}GEO Command Center{% endblock %}
+
+{% block content %}
+<div id="geoCommandApp">
+    <div class="empty-state"><p>Loading...</p></div>
+</div>
+
+<!-- Alert Panel (dropdown) -->
+<div id="alertPanel" class="gcc-alert-panel" style="display:none;">
+    <div class="gcc-alert-panel__header">
+        <strong>Smart Alerts</strong>
+        <button onclick="toggleAlertPanel()" class="gcc-alert-panel__close">&times;</button>
+    </div>
+    <div id="alertPanelBody" class="gcc-alert-panel__body">
+        <p class="muted">No alerts</p>
+    </div>
+</div>
+
+<script>
+const PROJECT_ID = {{ project_id }};
+
+/* ---- State ---- */
+let currentScreen = 'kpi';
+let selectedDays = 30;
+let biData = null;
+let dashData = null;
+let prevBiData = null; // Previous period for delta calculation
+let projectName = '';
+let brandName = '';
+let competitors = [];
+let activeLLMs = ['chatgpt', 'perplexity', 'gemini', 'yandexgpt', 'deepseek', 'gigachat'];
+let projectDomain = '';
+let llmProviders = [];
+let projectData = null; // Full project object
+let geoAuditData = null; // Site audit response from backend
+
+/* Chart instances */
+let readinessGauge = null;
+let sovRadarChart = null;
+let citationTrendChart = null;
+let sentimentBarChart = null;
+let jsonldGraphChart = null;
+let freshnessChart = null;
+let reviewChart = null;
+let pogoChart = null;
+let gaugeCharts = [];
+let kpiHeatmapChart = null;
+let intentChart = null;
+
+/* ---- Theme-aware semantic colors via CSS custom properties ---- */
+/* Colors defined as --tc-green, --tc-yellow, etc. in style.css */
+function tc(key) {
+    return 'var(--tc-' + key + ')';
+}
+
+const COLORS = [
+    '#60a5fa', '#34d399', '#fb923c', '#a78bfa',
+    '#f87171', '#2dd4bf', '#fbbf24', '#818cf8',
+];
+
+const PROVIDER_COLORS = {
+    chatgpt: '#60a5fa', gemini: '#34d399', deepseek: '#a78bfa',
+    yandexgpt: '#fb923c', perplexity: '#f87171', gigachat: '#f97316',
+    claude: '#d4a574', aio: '#8b5cf6',
+};
+
+const LLM_TOGGLES = [
+    { id: 'chatgpt', label: 'ChatGPT' },
+    { id: 'perplexity', label: 'Perplexity' },
+    { id: 'claude', label: 'Claude' },
+    { id: 'gemini', label: 'Gemini' },
+    { id: 'aio', label: 'AI Overviews' },
+    { id: 'yandexgpt', label: 'Я.Нейро' },
+];
+
+const GLOSSARY = {
+    // KPI metrics
+    SoM: 'Share of Model — доля упоминаний бренда среди всех упомянутых брендов',
+    AIVS: 'AI Visibility Score — агрегированная оценка видимости бренда (0–100)',
+    NSS: 'Net Sentiment Score — индекс тональности упоминаний (−100 до +100)',
+    Top1: 'Top-1 Win Rate — доля списков, где бренд на 1-й позиции',
+    Hallucination: 'Hallucination Rate — доля ответов с галлюцинациями (неверные факты о бренде)',
+    Resilience: 'Resilience Score — стабильность упоминаний при повторных запросах (0–1)',
+    GEOScore: 'GEO Readiness Score — композитная оценка готовности к GEO (AIVS 35% + SoM 20% + Resilience 15% + Halluc 15% + NSS 15%)',
+    // KPI charts
+    SOVRadar: 'AI Share of Voice — доля видимости бренда по каждому LLM-движку',
+    CitationTrend: 'Тренд цитирования — динамика mention rate по провайдерам за период',
+    SentimentBar: 'Сентимент и галлюцинации — баланс позитивных и проблемных упоминаний',
+    IntentPen: 'Intent Penetration — AIVS (0–100) по каждому типу интента (comparison, recommendation и т.д.)',
+    CompMatrix: 'Competitive Matrix — таблица сравнения бренда с конкурентами по SoM, mention rate, RVS',
+    CitGraph: 'Citation Trust Graph — домены, которые LLM цитируют в ответах',
+    Heatmap: 'AIVS Heatmap — тепловая карта видимости по сценариям × провайдерам',
+    // Tech & Crawl
+    RobotsTxt: 'robots.txt — файл, контролирующий доступ краулеров (LLM-ботов) к вашему контенту',
+    JsonLD: 'JSON-LD Schema — структурированные данные, помогающие LLM понять контент (Organization, FAQ, Product и др.)',
+    CrawlAccess: 'LLM Crawl Access — сводка доступности сайта для краулеров LLM-провайдеров',
+    SchemaAudit: 'Schema.org Audit — проверка наличия рекомендуемых типов разметки для GEO',
+    // Content Lab
+    AnswerFirst: 'Answer-First — паттерн структуры контента: прямой ответ в первом абзаце под H2/H3',
+    EEAT: 'E-E-A-T — Experience, Expertise, Authoritativeness, Trustworthiness (сигналы доверия)',
+    Freshness: 'Content Freshness — свежесть контента: LLM предпочитают актуальные данные с датами',
+    TopCited: 'Top Cited URLs — страницы, наиболее часто цитируемые LLM в ответах',
+    // Spatial GEO
+    NAP: 'NAP (Name, Address, Phone) — согласованность контактных данных в разных справочниках',
+    ReviewVelocity: 'Review Velocity — скорость накопления отзывов, влияющая на локальный авторитет',
+    LocalSchema: 'LocalBusiness Schema — разметка для филиалов с адресом, часами, координатами',
+    // Yandex Neuro
+    PogoStick: 'Pogo-sticking — возврат к SERP после короткого визита; критичный поведенческий фактор Яндекса',
+    CulturalCodes: 'Cultural Codes — Рунет-специфичные факторы: уникальность текста, привязка региона, H1',
+    YandexGPT: 'YandexGPT — нейросетевой ответчик Яндекса (Я.Нейро), использует собственную базу знаний',
+    Behavioral: 'Behavioral Factors — поведенческие метрики (dwell time, bounce rate, return visits), важные для Яндекса',
+    // Action Matrix
+    ActionMatrix: 'Action Matrix — чеклист действий по GEO-оптимизации с зависимостями и приоритетами',
+};
+
+/* ---- Helpers ---- */
+function escapeHtml(t) {
+    if (!t) return '';
+    return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function formatPct(v) { return (v * 100).toFixed(1) + '%'; }
+function formatScore(v) { return Number(v).toFixed(1); }
+
+function tip(key, label) {
+    var text = GLOSSARY[key] || key;
+    return '<span class="term-tip" data-tip="' + escapeHtml(text) + '">' + (label || key)
+        + '<svg class="term-tip__icon" viewBox="0 0 16 16" fill="currentColor">'
+        + '<circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.2"/>'
+        + '<text x="8" y="12" text-anchor="middle" font-size="11" font-weight="700">?</text></svg></span>';
+}
+
+function aivsZone(v) {
+    if (v >= 70) return { cls: 'metric-zone--green', text: 'Высокая видимость' };
+    if (v >= 40) return { cls: 'metric-zone--yellow', text: 'Средняя видимость' };
+    if (v >= 15) return { cls: 'metric-zone--orange', text: 'Низкая видимость' };
+    return { cls: 'metric-zone--red', text: 'Бренд невидим' };
+}
+function deltaChip(current, previous, suffix, inverted) {
+    if (current === null || current === undefined || previous === null || previous === undefined) return '';
+    var d = current - previous;
+    if (Math.abs(d) < 0.1) return '<span class="gcc-delta gcc-delta--neutral">—</span>';
+    var isUp = d > 0;
+    var arrow = isUp ? '▲' : '▼';
+    // inverted = true means lower is better (e.g., hallucination rate)
+    var cls = inverted ? (isUp ? 'gcc-delta--down' : 'gcc-delta--up') : (isUp ? 'gcc-delta--up' : 'gcc-delta--down');
+    return '<span class="gcc-delta ' + cls + '">' + arrow + ' ' + Math.abs(d).toFixed(1) + (suffix || '') + '</span>';
+}
+
+function nssColor(v) {
+    if (v >= 30) return tc('green');
+    if (v >= 0) return tc('muted');
+    if (v >= -30) return tc('orange');
+    return tc('red');
+}
+
+function skeletonBlock(height) {
+    height = height || '1rem';
+    return '<div class="gcc-skeleton" style="height:' + height + ';"></div>';
+}
+function renderLoadingSkeleton(panel) {
+    var html = '<div class="gcc-loading-state">';
+    html += '<div class="gcc-skeleton-grid">';
+    for (var i = 0; i < 4; i++) {
+        html += '<div class="gcc-skeleton-card">';
+        html += skeletonBlock('0.75rem');
+        html += skeletonBlock('2rem');
+        html += skeletonBlock('0.6rem');
+        html += '</div>';
+    }
+    html += '</div>';
+    html += '<div class="gcc-skeleton-grid gcc-skeleton-grid--2col" style="margin-top:1rem;">';
+    html += '<div class="gcc-skeleton-card" style="min-height:200px;">' + skeletonBlock('200px') + '</div>';
+    html += '<div class="gcc-skeleton-card" style="min-height:200px;">' + skeletonBlock('200px') + '</div>';
+    html += '</div>';
+    html += '</div>';
+    panel.innerHTML = html;
+}
+
+/* ---- Centralized resize handler (prevents listener leaks) ---- */
+function _resizeAllCharts() {
+    [sovRadarChart, sentimentBarChart, kpiHeatmapChart, intentChart,
+     readinessGauge, jsonldGraphChart, freshnessChart, reviewChart, pogoChart]
+        .concat(gaugeCharts)
+        .forEach(function(chart) {
+            if (chart && typeof chart.resize === 'function') {
+                try { chart.resize(); } catch(_) {}
+            }
+        });
+}
+window.addEventListener('resize', _resizeAllCharts);
+
+/* ---- Init ---- */
+document.addEventListener('DOMContentLoaded', loadGeoCenter);
+
+async function loadGeoCenter() {
+    var projResp = await apiFetch('/api/v1/projects/' + PROJECT_ID);
+    if (projResp && projResp.ok) {
+        var proj = await projResp.json();
+        projectData = proj;
+        projectName = proj.name || 'Project';
+        brandName = proj.brand_name || '';
+        competitors = proj.competitors || [];
+        projectDomain = proj.domain || '';
+        llmProviders = proj.llm_providers || [];
+    }
+    // Restore tab from URL hash (e.g., #tech)
+    currentScreen = getScreenFromHash();
+    // Restore Action Matrix state from localStorage
+    restoreMatrixState();
+    renderShell();
+    await refreshData();
+}
+
+async function refreshData() {
+    // Show skeleton loading state on current panel
+    var activePanel = document.getElementById('panel-' + currentScreen);
+    if (activePanel && currentScreen !== 'matrix') {
+        renderLoadingSkeleton(activePanel);
+    }
+
+    var params = '?days=' + selectedDays;
+    // Fetch current + previous period + GEO audit in parallel
+    var [biResp, dashResp, prevBiResp, auditResp] = await Promise.all([
+        apiFetch('/api/v1/llm/bi-dashboard/' + PROJECT_ID + params),
+        apiFetch('/api/v1/llm/dashboard/' + PROJECT_ID + params),
+        apiFetch('/api/v1/llm/bi-dashboard/' + PROJECT_ID + '?days=' + (selectedDays * 2)),
+        apiFetch('/api/v1/geo-audit/site-audit/' + PROJECT_ID + '?pages=10'),
+    ]);
+    biData = biResp && biResp.ok ? await biResp.json() : null;
+    dashData = dashResp && dashResp.ok ? await dashResp.json() : null;
+    // prevBiData covers 2x window; approximate "previous period" by comparing
+    prevBiData = prevBiResp && prevBiResp.ok ? await prevBiResp.json() : null;
+    geoAuditData = auditResp && auditResp.ok ? await auditResp.json() : null;
+    lastDataUpdate = new Date();
+    renderCurrentScreen();
+    renderReadinessGauge();
+    renderKpiMiniStrip();
+    renderLastUpdated();
+    generateSmartAlerts();
+}
+
+/* ================================================================
+   SHELL: Context bar + Persistent Header + Tabs + Panels
+   ================================================================ */
+function renderShell() {
+    var app = document.getElementById('geoCommandApp');
+    var screens = [
+        { id: 'kpi', label: 'Executive KPI', icon: '📊' },
+        { id: 'tech', label: 'Tech & Crawl', icon: '⚙️' },
+        { id: 'content', label: 'Citable Content', icon: '✍️' },
+        { id: 'spatial', label: 'Spatial GEO', icon: '📍' },
+        { id: 'yandex', label: 'Yandex Neuro', icon: '🇷🇺' },
+        { id: 'matrix', label: 'Action Matrix', icon: '✅' },
+    ];
+
+    var html = '';
+
+    /* ---- Context bar ---- */
+    html += '<div class="llm-dash__context-bar">';
+    html += '<div style="display:flex;align-items:center;gap:1rem;">';
+    html += '<a href="/project/' + PROJECT_ID + '" class="back-link">';
+    html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>';
+    html += 'Back</a>';
+    html += '<span class="llm-dash__project-name">' + escapeHtml(projectName) + '</span>';
+    html += '</div>';
+    html += '<div class="llm-dash__controls">';
+    html += '<a href="/project/' + PROJECT_ID + '/llm-dashboard" class="debug-link" title="LLM Dashboard">';
+    html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>';
+    html += 'LLM Dashboard</a>';
+    html += '<a href="/project/' + PROJECT_ID + '/prompts" class="debug-link" title="Manage Prompts">';
+    html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
+    html += 'Prompts</a>';
+    html += '<select onchange="onDaysChange(this.value)">';
+    html += '<option value="7"' + (selectedDays===7?' selected':'') + '>7 days</option>';
+    html += '<option value="30"' + (selectedDays===30?' selected':'') + '>30 days</option>';
+    html += '<option value="90"' + (selectedDays===90?' selected':'') + '>90 days</option>';
+    html += '</select>';
+    html += '<span id="lastUpdatedStamp" class="gcc-last-updated" style="display:none;"></span>';
+    html += '<button id="autoRefreshToggle" class="gcc-refresh-btn" onclick="toggleAutoRefresh()" title="Auto-refresh OFF">';
+    html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>';
+    html += '<span id="refreshCountdown" style="display:none;margin-left:3px;"></span>';
+    html += '</button>';
+    html += '</div></div>';
+
+    /* ---- Persistent GEO Header ---- */
+    html += '<div class="gcc-header">';
+
+    // LLM toggle buttons
+    html += '<div class="gcc-header__toggles">';
+    LLM_TOGGLES.forEach(function(llm) {
+        var isActive = activeLLMs.includes(llm.id);
+        var color = PROVIDER_COLORS[llm.id] || '#64748b';
+        html += '<button class="gcc-toggle' + (isActive ? ' gcc-toggle--active' : '') + '" ';
+        html += 'data-llm="' + escapeHtml(llm.id) + '" ';
+        html += 'style="--toggle-color:' + color + ';">';
+        html += '<span class="gcc-toggle__label">' + escapeHtml(llm.label) + '</span>';
+        html += '</button>';
+    });
+    html += '</div>';
+
+    // Readiness Score ring
+    html += '<div class="gcc-header__readiness">';
+    html += '<div id="readinessGauge" style="width:80px;height:80px;"></div>';
+    html += '<span class="gcc-header__readiness-label">GEO Readiness</span>';
+    html += '</div>';
+
+    // Alert bell
+    html += '<div class="gcc-header__alerts">';
+    html += '<button class="gcc-alert-bell" onclick="toggleAlertPanel()">';
+    html += '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>';
+    html += '<span class="gcc-alert-count" id="alertCount">0</span>';
+    html += '</button>';
+    html += '</div>';
+
+    html += '</div>';
+
+    /* ---- Tabs ---- */
+    html += '<div class="llm-dash__tabs">';
+    screens.forEach(function(s) {
+        html += '<button class="llm-dash__tab' + (s.id===currentScreen?' active':'') + '" data-screen="' + escapeHtml(s.id) + '">';
+        html += s.icon + ' ' + escapeHtml(s.label);
+        html += '</button>';
+    });
+    html += '</div>';
+
+    /* ---- KPI Mini Strip (always visible) ---- */
+    html += '<div class="gcc-kpi-strip" id="kpiMiniStrip"></div>';
+
+    /* ---- Panels ---- */
+    screens.forEach(function(s) {
+        html += '<div class="llm-dash__panel' + (s.id===currentScreen?' active':'') + '" id="panel-' + s.id + '">';
+        html += '<div class="empty-state"><p>Loading...</p></div>';
+        html += '</div>';
+    });
+
+    app.innerHTML = html;
+
+    /* ---- Event delegation (no inline onclick) ---- */
+    // LLM toggle buttons
+    app.addEventListener('click', function(e) {
+        var toggle = e.target.closest('.gcc-toggle[data-llm]');
+        if (toggle) {
+            toggleLLM(toggle.getAttribute('data-llm'));
+            return;
+        }
+        var tab = e.target.closest('.llm-dash__tab[data-screen]');
+        if (tab) {
+            switchScreen(tab.getAttribute('data-screen'));
+            return;
+        }
+    });
+}
+
+function renderKpiMiniStrip() {
+    var strip = document.getElementById('kpiMiniStrip');
+    if (!strip) return;
+    if (!biData) { strip.innerHTML = ''; return; }
+
+    var gm = biData.global_metrics;
+    var score = computeGeoReadiness();
+    var scoreColor = score >= 70 ? tc('green') : score >= 40 ? tc('yellow') : tc('red');
+    var aivsColor = gm.aivs >= 30 ? tc('green') : gm.aivs >= 15 ? tc('yellow') : tc('red');
+    var somColor = gm.som >= 20 ? tc('green') : gm.som >= 10 ? tc('yellow') : tc('red');
+    var nssColor = gm.nss >= 20 ? tc('green') : gm.nss >= 0 ? tc('yellow') : tc('red');
+
+    var html = '';
+    html += '<div class="gcc-kpi-strip__item"><span class="gcc-kpi-strip__label">GEO Score</span><span class="gcc-kpi-strip__value" style="color:' + scoreColor + ';">' + score + '</span></div>';
+    html += '<div class="gcc-kpi-strip__sep"></div>';
+    html += '<div class="gcc-kpi-strip__item"><span class="gcc-kpi-strip__label">AIVS</span><span class="gcc-kpi-strip__value" style="color:' + aivsColor + ';">' + gm.aivs.toFixed(1) + '</span></div>';
+    html += '<div class="gcc-kpi-strip__sep"></div>';
+    html += '<div class="gcc-kpi-strip__item"><span class="gcc-kpi-strip__label">SoM</span><span class="gcc-kpi-strip__value" style="color:' + somColor + ';">' + gm.som.toFixed(1) + '%</span></div>';
+    html += '<div class="gcc-kpi-strip__sep"></div>';
+    html += '<div class="gcc-kpi-strip__item"><span class="gcc-kpi-strip__label">NSS</span><span class="gcc-kpi-strip__value" style="color:' + nssColor + ';">' + gm.nss.toFixed(0) + '</span></div>';
+    if (gm.hallucination_rate !== null && gm.hallucination_rate !== undefined) {
+        var hallPct = (gm.hallucination_rate * 100);
+        var hallColor = hallPct <= 5 ? tc('green') : hallPct <= 15 ? tc('yellow') : tc('red');
+        html += '<div class="gcc-kpi-strip__sep"></div>';
+        html += '<div class="gcc-kpi-strip__item"><span class="gcc-kpi-strip__label">Halluc.</span><span class="gcc-kpi-strip__value" style="color:' + hallColor + ';">' + hallPct.toFixed(1) + '%</span></div>';
+    }
+    strip.innerHTML = html;
+}
+
+/* ---- Navigation ---- */
+function switchScreen(screenId) {
+    currentScreen = screenId;
+    document.querySelectorAll('.llm-dash__tab').forEach(function(b) { b.classList.remove('active'); });
+    document.querySelector('.llm-dash__tab[data-screen="' + screenId + '"]').classList.add('active');
+    document.querySelectorAll('.llm-dash__panel').forEach(function(p) { p.classList.remove('active'); });
+    document.getElementById('panel-' + screenId).classList.add('active');
+    // Update URL hash for bookmarkable navigation
+    if (history.replaceState) {
+        history.replaceState(null, '', '#' + screenId);
+    } else {
+        location.hash = '#' + screenId;
+    }
+    renderCurrentScreen();
+}
+
+// Restore tab from URL hash on load
+function getScreenFromHash() {
+    var hash = location.hash.replace('#', '');
+    var valid = ['kpi', 'tech', 'content', 'spatial', 'yandex', 'matrix'];
+    return valid.indexOf(hash) >= 0 ? hash : 'kpi';
+}
+
+function onDaysChange(val) {
+    selectedDays = parseInt(val);
+    refreshData();
+}
+
+function renderCurrentScreen() {
+    switch (currentScreen) {
+        case 'kpi': renderKPI(); break;
+        case 'tech': renderTech(); break;
+        case 'content': renderContent(); break;
+        case 'spatial': renderSpatial(); break;
+        case 'yandex': renderYandex(); break;
+        case 'matrix': renderMatrix(); break;
+    }
+}
+
+/* ---- Persistent Header Logic ---- */
+function toggleLLM(id) {
+    var idx = activeLLMs.indexOf(id);
+    if (idx >= 0) { activeLLMs.splice(idx, 1); } else { activeLLMs.push(id); }
+    // Update toggle button visuals
+    var btn = document.querySelector('.gcc-toggle[data-llm="' + id + '"]');
+    if (btn) btn.classList.toggle('gcc-toggle--active');
+    // Re-render current screen with new provider filter
+    renderCurrentScreen();
+}
+
+function computeGeoReadiness() {
+    if (!biData) return 0;
+    var gm = biData.global_metrics;
+    // Composite GEO Readiness Score (0-100):
+    // 35% AIVS, 20% SoM (capped at 50→100), 15% Resilience,
+    // 15% (100 - hallucination*100), 15% NSS normalized (0-100)
+    var aivsComponent = Math.min(gm.aivs, 100) * 0.35;
+    var somComponent = Math.min(gm.som * 2, 100) * 0.20; // SoM 50% → 100 score
+    var resilienceComponent = (gm.resilience_score || 0) * 100 * 0.15;
+    var hallComponent = (1 - (gm.hallucination_rate || 0)) * 100 * 0.15;
+    var nssNorm = ((gm.nss + 100) / 200) * 100; // -100..+100 → 0..100
+    var nssComponent = nssNorm * 0.15;
+    return Math.round(Math.max(0, Math.min(100, aivsComponent + somComponent + resilienceComponent + hallComponent + nssComponent)));
+}
+
+function renderReadinessGauge() {
+    var container = document.getElementById('readinessGauge');
+    if (!container) return;
+    if (readinessGauge) readinessGauge.dispose();
+    readinessGauge = echarts.init(container, 'dark');
+
+    var score = computeGeoReadiness();
+    readinessGauge.setOption({
+        backgroundColor: 'transparent',
+        series: [{
+            type: 'gauge',
+            startAngle: 220, endAngle: -40,
+            radius: '100%',
+            center: ['50%', '55%'],
+            min: 0, max: 100,
+            splitNumber: 5,
+            axisLine: {
+                lineStyle: {
+                    width: 8,
+                    color: [[0.3, '#f87171'], [0.7, '#fbbf24'], [1, '#34d399']]
+                }
+            },
+            pointer: { length: '60%', width: 4, itemStyle: { color: '#e2e8f0' } },
+            axisTick: { show: false },
+            splitLine: { show: false },
+            axisLabel: { show: false },
+            detail: {
+                fontSize: 16, fontWeight: 700, color: '#e2e8f0',
+                offsetCenter: [0, '70%'],
+                formatter: '{value}%'
+            },
+            data: [{ value: score }]
+        }]
+    });
+}
+
+var smartAlerts = []; // Generated alerts from metric analysis
+
+function generateSmartAlerts() {
+    smartAlerts = [];
+    if (!biData) { updateAlertBadge(); return; }
+    var gm = biData.global_metrics;
+
+    // Threshold-based alerts from real metrics
+    if (gm.aivs < 15) {
+        smartAlerts.push({ severity: 'critical', title: 'Бренд невидим для LLM', desc: 'AIVS = ' + formatScore(gm.aivs) + '. Бренд практически не упоминается в ответах LLM. Требуется комплексная GEO-оптимизация.' });
+    } else if (gm.aivs < 40) {
+        smartAlerts.push({ severity: 'warning', title: 'Низкая AI-видимость', desc: 'AIVS = ' + formatScore(gm.aivs) + '. Бренд слабо представлен в ответах LLM.' });
+    }
+
+    if (gm.hallucination_rate !== null && gm.hallucination_rate > 0.15) {
+        smartAlerts.push({ severity: 'critical', title: 'Высокий уровень галлюцинаций', desc: 'Hallucination Rate = ' + (gm.hallucination_rate * 100).toFixed(1) + '%. LLM генерируют неточную информацию о бренде.' });
+    } else if (gm.hallucination_rate !== null && gm.hallucination_rate > 0.05) {
+        smartAlerts.push({ severity: 'warning', title: 'Заметные галлюцинации', desc: 'Hallucination Rate = ' + (gm.hallucination_rate * 100).toFixed(1) + '%. Рекомендуется проверить данные о бренде.' });
+    }
+
+    if (gm.nss < -20) {
+        smartAlerts.push({ severity: 'critical', title: 'Негативная тональность', desc: 'NSS = ' + (gm.nss >= 0 ? '+' : '') + formatScore(gm.nss) + '. LLM упоминают бренд преимущественно в негативном ключе.' });
+    } else if (gm.nss < 0) {
+        smartAlerts.push({ severity: 'warning', title: 'Тональность ниже нейтральной', desc: 'NSS = ' + formatScore(gm.nss) + '. Есть потенциал для улучшения тональности упоминаний.' });
+    }
+
+    if (gm.resilience_score < 0.5) {
+        smartAlerts.push({ severity: 'warning', title: 'Низкая стабильность упоминаний', desc: 'Resilience = ' + (gm.resilience_score * 100).toFixed(0) + '%. Упоминания бренда нестабильны при повторных запросах.' });
+    }
+
+    if (gm.som < 10) {
+        smartAlerts.push({ severity: 'warning', title: 'Малая доля модели', desc: 'SoM = ' + formatScore(gm.som) + '%. Конкуренты получают значительно больше упоминаний.' });
+    }
+
+    // Delta alerts (compare with 2x period)
+    if (prevBiData && biData) {
+        var prevGm = prevBiData.global_metrics;
+        var aivsDelta = gm.aivs - prevGm.aivs;
+        if (aivsDelta < -10) {
+            smartAlerts.push({ severity: 'critical', title: 'Падение AIVS', desc: 'AIVS упал на ' + Math.abs(aivsDelta).toFixed(1) + ' пунктов относительно расширенного периода. Возможна потеря видимости.' });
+        }
+        var somDelta = gm.som - prevGm.som;
+        if (somDelta < -5) {
+            smartAlerts.push({ severity: 'warning', title: 'Снижение SoM', desc: 'Share of Model снизился на ' + Math.abs(somDelta).toFixed(1) + '%. Конкуренты наращивают присутствие.' });
+        }
+    }
+
+    // Intent penetration gaps
+    if (gm.intent_penetration) {
+        Object.keys(gm.intent_penetration).forEach(function(intent) {
+            if (gm.intent_penetration[intent] < 10) {
+                smartAlerts.push({ severity: 'info', title: 'Слепое пятно: ' + intent, desc: 'AIVS по интенту "' + intent + '" = ' + formatScore(gm.intent_penetration[intent]) + '. Рассмотрите создание контента под этот интент.' });
+            }
+        });
+    }
+
+    // Also include backend-generated insights
+    if (biData.geo_action_plan && biData.geo_action_plan.insights) {
+        biData.geo_action_plan.insights.forEach(function(ins) {
+            smartAlerts.push({ severity: ins.severity, title: ins.title_ru, desc: ins.description_ru });
+        });
+    }
+
+    updateAlertBadge();
+}
+
+function updateAlertBadge() {
+    var el = document.getElementById('alertCount');
+    if (!el) return;
+    var critCount = smartAlerts.filter(function(a) { return a.severity === 'critical'; }).length;
+    var total = smartAlerts.length;
+    el.textContent = total;
+    el.style.display = total > 0 ? 'flex' : 'none';
+    // Pulse red if critical alerts
+    el.style.background = critCount > 0 ? '#ef4444' : '#f59e0b';
+}
+
+function toggleAlertPanel() {
+    var panel = document.getElementById('alertPanel');
+    if (!panel) return;
+    var isVisible = panel.style.display !== 'none';
+    panel.style.display = isVisible ? 'none' : 'block';
+
+    if (!isVisible) {
+        var body = document.getElementById('alertPanelBody');
+        if (smartAlerts.length === 0) {
+            body.innerHTML = '<p class="muted">Нет активных алертов — всё в порядке 🎉</p>';
+            return;
+        }
+        // Sort: critical first, then warning, then info
+        var sorted = smartAlerts.slice().sort(function(a, b) {
+            var order = { critical: 0, warning: 1, info: 2 };
+            return (order[a.severity] || 3) - (order[b.severity] || 3);
+        });
+        var html = '';
+        sorted.forEach(function(alert) {
+            var sevColor = alert.severity === 'critical' ? tc('red') : alert.severity === 'warning' ? tc('yellow') : '#60a5fa';
+            var sevIcon = alert.severity === 'critical' ? '🔴' : alert.severity === 'warning' ? '🟡' : '🔵';
+            html += '<div class="gcc-alert-item">';
+            html += '<span class="gcc-alert-sev" style="color:' + sevColor + ';">' + sevIcon + ' ' + alert.severity.toUpperCase() + '</span>';
+            html += '<div class="gcc-alert-text">';
+            html += '<strong>' + escapeHtml(alert.title) + '</strong>';
+            html += '<p>' + escapeHtml(alert.desc) + '</p>';
+            html += '</div>';
+            html += '</div>';
+        });
+        body.innerHTML = html;
+    }
+}
+
+/* ================================================================
+   SCREEN 1: Executive KPI Panel (REAL DATA)
+   ================================================================ */
+function renderKPI() {
+    var panel = document.getElementById('panel-kpi');
+    if (!biData) {
+        panel.innerHTML = '<div class="llm-dash__empty"><p>No data available for this period.</p></div>';
+        return;
+    }
+
+    var gm = biData.global_metrics;
+    var pgm = prevBiData ? prevBiData.global_metrics : null;
+    var html = '';
+
+    /* ---- Export bar ---- */
+    html += '<div class="gcc-export-bar">';
+    html += '<span class="gcc-export-bar__title">Executive KPI Dashboard</span>';
+    html += '<div class="gcc-export-bar__actions">';
+    html += '<button class="btn btn-sm gcc-export-btn" onclick="exportKpiReport(\'csv\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> CSV</button>';
+    html += '<button class="btn btn-sm gcc-export-btn" onclick="exportKpiReport(\'pdf\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> PDF</button>';
+    html += '</div></div>';
+
+    /* ---- KPI Summary Cards (6 cards, 2 rows of 3) ---- */
+    html += '<div class="gcc-kpi-cards gcc-kpi-cards--6">';
+
+    // AIVS
+    var az = aivsZone(gm.aivs);
+    html += '<div class="metric-card gcc-kpi-card--clickable" onclick="showDrillDown(\'aivs\')">';
+    html += '<div class="metric-card__header">' + tip('AIVS', 'AI Visibility Score') + deltaChip(gm.aivs, pgm ? pgm.aivs : null, '') + '</div>';
+    html += '<div class="metric-card__value" style="color:var(--accent);">' + formatScore(gm.aivs) + '<span class="metric-card__max"> / 100</span></div>';
+    html += '<div class="metric-card__viz"><div class="progress-bar"><div class="progress-bar__fill" style="width:' + Math.min(gm.aivs, 100) + '%;"></div></div></div>';
+    html += '<div class="metric-card__interpretation ' + az.cls + '">' + az.text + '</div>';
+    html += '</div>';
+
+    // SoM
+    html += '<div class="metric-card gcc-kpi-card--clickable" onclick="showDrillDown(\'som\')">';
+    html += '<div class="metric-card__header">' + tip('SoM', 'Share of Model') + deltaChip(gm.som, pgm ? pgm.som : null, '%') + '</div>';
+    html += '<div class="metric-card__value" style="color:' + tc('green') + ';">' + formatScore(gm.som) + '%</div>';
+    html += '<div class="metric-card__sublabel">Доля бренда среди всех упоминаний</div>';
+    html += '</div>';
+
+    // NSS
+    var nc = nssColor(gm.nss);
+    html += '<div class="metric-card gcc-kpi-card--clickable" onclick="showDrillDown(\'nss\')">';
+    html += '<div class="metric-card__header">' + tip('NSS', 'Net Sentiment Score') + deltaChip(gm.nss, pgm ? pgm.nss : null, '') + '</div>';
+    html += '<div class="metric-card__value" style="color:' + nc + ';">' + (gm.nss >= 0 ? '+' : '') + formatScore(gm.nss) + '</div>';
+    html += '<div class="metric-card__viz">';
+    html += '<div class="nss-bar"><div class="nss-bar__track">';
+    var nssPos = ((gm.nss + 100) / 200) * 100;
+    html += '<div class="nss-bar__marker" style="left:' + Math.max(2, Math.min(98, nssPos)) + '%;"></div>';
+    html += '</div><div class="nss-bar__labels"><span>-100</span><span>0</span><span>+100</span></div></div>';
+    html += '</div></div>';
+
+    // Top-1 Win Rate
+    html += '<div class="metric-card gcc-kpi-card--clickable" onclick="showDrillDown(\'top1\')">';
+    html += '<div class="metric-card__header">' + tip('Top1', 'Top-1 Win Rate') + deltaChip(gm.top1_win_rate, pgm ? pgm.top1_win_rate : null, '%') + '</div>';
+    if (gm.top1_win_rate !== null && gm.top1_win_rate !== undefined) {
+        html += '<div class="metric-card__value" style="color:' + tc('yellow') + ';">' + formatScore(gm.top1_win_rate) + '%</div>';
+        html += '<div class="metric-card__sublabel">Доля списков с брендом на 1-й позиции</div>';
+    } else {
+        html += '<div class="metric-card__value metric-na">N/A</div>';
+        html += '<div class="metric-card__sublabel metric-na-hint">Нет данных о позициях</div>';
+    }
+    html += '</div>';
+
+    // Hallucination Rate
+    html += '<div class="metric-card gcc-kpi-card--clickable" onclick="showDrillDown(\'hallucination\')">';
+    html += '<div class="metric-card__header">' + tip('Hallucination', 'Hallucination Rate') + deltaChip(gm.hallucination_rate !== null ? gm.hallucination_rate * 100 : null, pgm && pgm.hallucination_rate !== null ? pgm.hallucination_rate * 100 : null, '%', true) + '</div>';
+    if (gm.hallucination_rate !== null && gm.hallucination_rate !== undefined) {
+        var hallPct = (gm.hallucination_rate * 100).toFixed(1);
+        var hallColor = gm.hallucination_rate > 0.15 ? tc('red') : gm.hallucination_rate > 0.05 ? tc('yellow') : tc('green');
+        html += '<div class="metric-card__value" style="color:' + hallColor + ';">' + hallPct + '%</div>';
+        html += '<div class="metric-card__sublabel">Доля ответов с галлюцинациями</div>';
+    } else {
+        html += '<div class="metric-card__value metric-na">N/A</div>';
+    }
+    html += '</div>';
+
+    // Resilience
+    html += '<div class="metric-card gcc-kpi-card--clickable" onclick="showDrillDown(\'resilience\')">';
+    html += '<div class="metric-card__header">' + tip('Resilience', 'Resilience Score') + deltaChip(gm.resilience_score ? gm.resilience_score * 100 : null, pgm && pgm.resilience_score ? pgm.resilience_score * 100 : null, '%') + '</div>';
+    var resScore = (gm.resilience_score * 100).toFixed(0);
+    var resColor = gm.resilience_score >= 0.8 ? tc('green') : gm.resilience_score >= 0.5 ? tc('yellow') : tc('red');
+    html += '<div class="metric-card__value" style="color:' + resColor + ';">' + resScore + '%</div>';
+    html += '<div class="metric-card__sublabel">Стабильность при повторных запросах</div>';
+    html += '</div>';
+
+    html += '</div>'; // gcc-kpi-cards
+
+    /* ---- 3-Column Chart Grid ---- */
+    html += '<div class="gcc-kpi-grid">';
+
+    // Radar SOV
+    html += '<div class="card gcc-chart-card">';
+    html += '<div class="gcc-section-header"><h3>' + tip('SOVRadar', 'AI Share of Voice') + '</h3>';
+    html += '<button class="gcc-expand-btn" onclick="expandChart(\'sovRadarContainer\',\'AI Share of Voice\')" title="Fullscreen"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg></button></div>';
+    html += '<div id="sovRadarContainer" style="height:300px;"></div>';
+    html += '</div>';
+
+    // Citation Trend
+    html += '<div class="card gcc-chart-card">';
+    html += '<div class="gcc-section-header"><h3>' + tip('CitationTrend', 'Citation Trend') + '</h3></div>';
+    html += '<div class="chart-container" style="height:300px;"><canvas id="citationTrendCanvas"></canvas></div>';
+    html += '</div>';
+
+    // Sentiment & Hallucination
+    html += '<div class="card gcc-chart-card">';
+    html += '<div class="gcc-section-header"><h3>' + tip('SentimentBar', 'Sentiment & Hallucination') + '</h3>';
+    html += '<button class="gcc-expand-btn" onclick="expandChart(\'sentimentBarContainer\',\'Sentiment & Hallucination\')" title="Fullscreen"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg></button></div>';
+    html += '<div id="sentimentBarContainer" style="height:300px;"></div>';
+    html += '</div>';
+
+    html += '</div>'; // gcc-kpi-grid
+
+    /* ---- Competitive Matrix ---- */
+    if (biData.competitive_matrix) {
+        html += '<div class="card" style="margin-top:1rem;">';
+        html += '<div class="gcc-section-header">';
+        html += '<h3>Competitive Matrix</h3>';
+        html += '<button class="btn btn-sm gcc-export-btn gcc-export-btn--inline" onclick="exportCompetitiveMatrix()" title="Export CSV"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> CSV</button>';
+        html += '</div>';
+        html += renderCompetitiveMatrixHTML(biData.competitive_matrix);
+        html += '</div>';
+    }
+
+    /* ---- 2-Column: Heatmap + Intent Penetration ---- */
+    html += '<div class="gcc-kpi-grid gcc-kpi-grid--2col" style="margin-top:1rem;">';
+
+    // AIVS Heatmap
+    if (biData.heatmap && biData.heatmap.cells.length > 0) {
+        html += '<div class="card gcc-chart-card">';
+        html += '<div class="gcc-section-header"><h3>AIVS Heatmap (Scenario × Provider)</h3>';
+        html += '<button class="gcc-expand-btn" onclick="expandChart(\'kpiHeatmapContainer\',\'AIVS Heatmap\')" title="Fullscreen"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg></button></div>';
+        var hmHeight = Math.max(250, biData.heatmap.scenarios.length * 60 + 100);
+        html += '<div id="kpiHeatmapContainer" style="height:' + hmHeight + 'px;"></div>';
+        html += '<div class="heatmap-legend" style="margin-top:0.5rem;">';
+        html += '<div class="heatmap-legend__item"><div class="heatmap-legend__color" style="background:#f87171;"></div> Red (&lt;20)</div>';
+        html += '<div class="heatmap-legend__item"><div class="heatmap-legend__color" style="background:#fbbf24;"></div> Yellow (20-50)</div>';
+        html += '<div class="heatmap-legend__item"><div class="heatmap-legend__color" style="background:#34d399;"></div> Green (&ge;50)</div>';
+        html += '</div>';
+        html += '</div>';
+    }
+
+    // Intent Penetration
+    if (gm.intent_penetration && Object.keys(gm.intent_penetration).length > 0) {
+        html += '<div class="card gcc-chart-card">';
+        html += '<div class="gcc-section-header"><h3>Intent Penetration (AIVS by Intent)</h3>';
+        html += '<button class="gcc-expand-btn" onclick="expandChart(\'intentPenetrationContainer\',\'Intent Penetration\')" title="Fullscreen"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg></button></div>';
+        html += '<div id="intentPenetrationContainer" style="height:280px;"></div>';
+        html += '</div>';
+    }
+
+    html += '</div>'; // 2-col grid
+
+    /* ---- Citation Trust Graph ---- */
+    if (biData.citation_graph && biData.citation_graph.domains.length > 0) {
+        html += '<div class="card" style="margin-top:1rem;">';
+        html += '<div class="gcc-section-header">';
+        html += '<h3>Citation Trust Graph</h3>';
+        html += '<button class="btn btn-sm gcc-export-btn gcc-export-btn--inline" onclick="exportCitationGraph()" title="Export CSV"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> CSV</button>';
+        html += '</div>';
+        html += '<p class="gcc-stub-desc" style="margin-bottom:0.75rem;">Domains cited in LLM responses. Total citations: <strong>' + biData.citation_graph.total_citations + '</strong></p>';
+        html += renderCitationGraphHTML(biData.citation_graph);
+        html += '</div>';
+    }
+
+    panel.innerHTML = html;
+
+    renderSOVRadar();
+    loadCitationTrend();
+    renderSentimentBar();
+    renderKpiHeatmap();
+    renderIntentPenetration();
+}
+
+function renderSOVRadar() {
+    var container = document.getElementById('sovRadarContainer');
+    if (!container || !dashData) return;
+    if (sovRadarChart) sovRadarChart.dispose();
+
+    var providerOrder = ['yandexgpt', 'deepseek', 'perplexity', 'chatgpt', 'gemini', 'gigachat'];
+    var rates = dashData.mention_rate_by_provider || {};
+    // Filter by active LLM toggles
+    var providers = providerOrder.filter(function(p) { return p in rates && activeLLMs.indexOf(p) >= 0; });
+    if (!providers.length) {
+        container.innerHTML = '<div class="llm-dash__empty" style="padding:2rem;"><p>No provider data — enable LLM toggles above</p></div>';
+        return;
+    }
+
+    sovRadarChart = echarts.init(container, 'dark');
+    var values = providers.map(function(p) { return Math.round(rates[p] * 100); });
+
+    var seriesData = [{
+        value: values,
+        name: escapeHtml(brandName || 'Your Brand'),
+        areaStyle: { color: 'rgba(96,165,250,0.2)' },
+        lineStyle: { color: '#60a5fa', width: 2 },
+        itemStyle: { color: '#60a5fa' },
+    }];
+
+    var legendNames = [escapeHtml(brandName || 'Your Brand')];
+
+    // Competitor overlay from competitor_sov_by_provider
+    var compColors = ['#f87171', '#fbbf24', '#a78bfa', '#2dd4bf', '#fb923c'];
+    var compSov = dashData.competitor_sov_by_provider || {};
+    var allCompetitors = Object.keys(dashData.competitor_sov || {});
+    allCompetitors.slice(0, 3).forEach(function(compName, ci) {
+        var compValues = providers.map(function(prov) {
+            var provComps = compSov[prov] || {};
+            return Math.round((provComps[compName] || 0) * 100);
+        });
+        // Only add if has any data
+        if (compValues.some(function(v) { return v > 0; })) {
+            var color = compColors[ci % compColors.length];
+            seriesData.push({
+                value: compValues,
+                name: escapeHtml(compName),
+                areaStyle: { color: color + '10' },
+                lineStyle: { color: color, width: 1.5, type: 'dashed' },
+                itemStyle: { color: color },
+            });
+            legendNames.push(escapeHtml(compName));
+        }
+    });
+
+    sovRadarChart.setOption({
+        backgroundColor: 'transparent',
+        radar: {
+            indicator: providers.map(function(p) { return { name: p, max: 100 }; }),
+            shape: 'polygon',
+            axisName: { color: '#a0aec0', fontSize: 11 },
+            splitArea: { areaStyle: { color: ['rgba(52,211,153,0.02)', 'rgba(96,165,250,0.05)'] } },
+            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
+            axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } },
+        },
+        legend: { data: legendNames, textStyle: { color: '#a0aec0', fontSize: 10 }, bottom: 0 },
+        series: [{ type: 'radar', data: seriesData }],
+        tooltip: { trigger: 'item' },
+    });
+}
+
+async function loadCitationTrend() {
+    var canvas = document.getElementById('citationTrendCanvas');
+    if (!canvas) return;
+
+    var resp = await apiFetch('/api/v1/llm/chart/' + PROJECT_ID + '?days=' + selectedDays);
+    if (!resp || !resp.ok) {
+        canvas.parentElement.innerHTML = '<div class="llm-dash__empty" style="padding:2rem;"><p>No trend data</p></div>';
+        return;
+    }
+    var data = await resp.json();
+
+    if (citationTrendChart) citationTrendChart.destroy();
+
+    var colorIdx = 0;
+    var datasets = data.datasets.map(function(ds) {
+        var color = PROVIDER_COLORS[ds.label] || COLORS[colorIdx % COLORS.length];
+        colorIdx++;
+        return {
+            label: ds.label,
+            data: ds.data,
+            borderColor: color,
+            backgroundColor: color + '20',
+            fill: false,
+            tension: 0.3,
+            pointRadius: 2,
+            pointHoverRadius: 5,
+            borderWidth: 2,
+            spanGaps: true,
+        };
+    });
+
+    citationTrendChart = new Chart(canvas, {
+        type: 'line',
+        data: { labels: data.labels, datasets: datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#a0aec0', font: { size: 10 } } } },
+            scales: {
+                x: { ticks: { color: '#64748b', maxTicksLimit: 8, font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+                y: {
+                    min: 0, max: 1,
+                    ticks: { color: '#64748b', callback: function(v) { return (v*100)+'%'; }, font: { size: 10 } },
+                    grid: { color: 'rgba(255,255,255,0.04)' },
+                },
+            },
+        },
+    });
+}
+
+function renderSentimentBar() {
+    var container = document.getElementById('sentimentBarContainer');
+    if (!container || !biData) return;
+    if (sentimentBarChart) sentimentBarChart.dispose();
+
+    var gm = biData.global_metrics;
+    sentimentBarChart = echarts.init(container, 'dark');
+
+    // Diverging bar: positive NSS goes right, negative goes left
+    // Also show hallucination rate as separate bar
+    var categories = ['Net Sentiment', 'Hallucination', 'Resilience'];
+    var nssVal = gm.nss; // -100 to +100
+    var hallVal = gm.hallucination_rate !== null ? -gm.hallucination_rate : 0; // negative = bad
+    var resVal = gm.resilience_score * 100; // 0-100, positive = good
+
+    sentimentBarChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+            trigger: 'axis',
+            axisPointer: { type: 'shadow' },
+            formatter: function(params) {
+                var p = params[0];
+                var val = p.value;
+                if (p.name === 'Hallucination') val = Math.abs(val);
+                return p.name + ': ' + val.toFixed(1) + (p.name === 'Net Sentiment' ? '' : '%');
+            }
+        },
+        grid: { left: '15%', right: '10%', top: '10%', bottom: '15%' },
+        xAxis: {
+            type: 'value',
+            min: -100, max: 100,
+            axisLabel: { color: '#64748b', fontSize: 10 },
+            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+            axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } },
+        },
+        yAxis: {
+            type: 'category',
+            data: categories,
+            axisLabel: { color: '#a0aec0', fontSize: 11 },
+            axisLine: { show: false },
+            axisTick: { show: false },
+        },
+        series: [{
+            type: 'bar',
+            data: [
+                { value: nssVal, itemStyle: { color: nssVal >= 0 ? tc('green') : tc('red') } },
+                { value: hallVal, itemStyle: { color: tc('red') } },
+                { value: resVal, itemStyle: { color: '#a78bfa' } },
+            ],
+            barWidth: '40%',
+            label: {
+                show: true,
+                position: 'insideRight',
+                formatter: function(p) {
+                    var v = p.value;
+                    if (p.name === 'Hallucination') return Math.abs(v).toFixed(1) + '%';
+                    if (p.name === 'Net Sentiment') return (v >= 0 ? '+' : '') + v.toFixed(1);
+                    return v.toFixed(0) + '%';
+                },
+                color: '#e2e8f0',
+                fontSize: 11,
+            },
+        }],
+    });
+}
+
+/* ---- Competitive Matrix HTML ---- */
+function renderCompetitiveMatrixHTML(cm) {
+    var html = '<div style="overflow-x:auto;">';
+    html += '<table class="serp-table"><thead><tr>';
+    html += '<th>Brand</th><th>SoM %</th><th>Mention Rate</th><th>Avg RVS</th>';
+    html += '</tr></thead><tbody>';
+
+    // Target row (highlighted)
+    html += '<tr style="background:rgba(96,165,250,0.08);">';
+    html += '<td><strong>' + escapeHtml(cm.target.name) + '</strong> ⭐</td>';
+    html += '<td style="color:' + tc('green') + ';font-weight:600;">' + formatScore(cm.target.som) + '%</td>';
+    html += '<td>' + formatPct(cm.target.mention_rate) + '</td>';
+    html += '<td>' + formatScore(cm.target.avg_rvs) + '</td>';
+    html += '</tr>';
+
+    // Competitor rows
+    cm.competitors.forEach(function(c) {
+        html += '<tr>';
+        html += '<td>' + escapeHtml(c.name) + '</td>';
+        html += '<td>' + formatScore(c.som) + '%</td>';
+        html += '<td>' + formatPct(c.mention_rate) + '</td>';
+        html += '<td>' + formatScore(c.avg_rvs) + '</td>';
+        html += '</tr>';
+    });
+
+    html += '</tbody></table></div>';
+    return html;
+}
+
+/* ---- Citation Trust Graph HTML ---- */
+function renderCitationGraphHTML(cg) {
+    var html = '<div style="overflow-x:auto;">';
+    html += '<table class="serp-table"><thead><tr>';
+    html += '<th>Domain</th><th>Citations</th><th>Providers</th><th>In Competitor Wins</th>';
+    html += '</tr></thead><tbody>';
+
+    var domains = cg.domains.slice(0, 15); // Top 15
+    domains.forEach(function(d) {
+        var compColor = d.appears_in_competitor_wins ? tc('red') : tc('green');
+        var compText = d.appears_in_competitor_wins ? 'Yes' : 'No';
+        html += '<tr>';
+        html += '<td><code>' + escapeHtml(d.domain) + '</code></td>';
+        html += '<td style="font-weight:600;">' + d.count + '</td>';
+        html += '<td>';
+        d.providers.forEach(function(p) {
+            var pc = PROVIDER_COLORS[p] || '#64748b';
+            html += '<span class="gcc-provider-badge" style="--badge-color:' + pc + ';">' + escapeHtml(p) + '</span> ';
+        });
+        html += '</td>';
+        html += '<td style="color:' + compColor + ';">' + compText + '</td>';
+        html += '</tr>';
+    });
+
+    html += '</tbody></table></div>';
+    return html;
+}
+
+/* ---- KPI Heatmap (ECharts) ---- */
+function renderKpiHeatmap() {
+    var container = document.getElementById('kpiHeatmapContainer');
+    if (!container || !biData || !biData.heatmap) return;
+    if (kpiHeatmapChart) kpiHeatmapChart.dispose();
+
+    var data = biData.heatmap;
+    // Filter vendors by active LLM toggles
+    var filteredVendors = data.vendors.filter(function(v) { return activeLLMs.indexOf(v) >= 0; });
+    if (!filteredVendors.length) {
+        container.innerHTML = '<div class="llm-dash__empty" style="padding:2rem;"><p>No vendors — enable LLM toggles above</p></div>';
+        return;
+    }
+
+    kpiHeatmapChart = echarts.init(container, 'dark');
+
+    var chartData = [];
+    data.cells.forEach(function(cell) {
+        var xi = filteredVendors.indexOf(cell.vendor);
+        var yi = data.scenarios.indexOf(cell.scenario);
+        if (xi >= 0 && yi >= 0) {
+            chartData.push([xi, yi, Math.round(cell.aivs * 10) / 10]);
+        }
+    });
+
+    kpiHeatmapChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+            position: 'top',
+            formatter: function(p) {
+                return data.vendors[p.data[0]] + ' × ' + data.scenarios[p.data[1]] + '<br/>AIVS: ' + p.data[2];
+            }
+        },
+        grid: { left: '25%', right: '8%', top: '8%', bottom: '15%' },
+        xAxis: {
+            type: 'category',
+            data: filteredVendors,
+            splitArea: { show: false },
+            axisLabel: { color: '#a0aec0', fontSize: 10, rotate: 30 },
+            axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } },
+        },
+        yAxis: {
+            type: 'category',
+            data: data.scenarios,
+            splitArea: { show: false },
+            axisLabel: {
+                color: '#a0aec0', fontSize: 10, width: 140, overflow: 'break',
+                formatter: function(v) {
+                    return v.length > 28 ? v.slice(0, 28) + '…' : v;
+                },
+            },
+            axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } },
+        },
+        visualMap: {
+            min: 0, max: 100,
+            calculable: false,
+            orient: 'horizontal',
+            left: 'center',
+            bottom: 0,
+            inRange: { color: ['#f87171', '#fbbf24', '#34d399'] },
+            textStyle: { color: '#a0aec0', fontSize: 10 },
+        },
+        series: [{
+            type: 'heatmap',
+            data: chartData,
+            label: {
+                show: true,
+                color: '#1a1a2e',
+                fontSize: 10,
+                fontWeight: 600,
+                formatter: function(p) { return p.data[2]; },
+            },
+            emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' } },
+        }],
+    });
+}
+
+/* ---- Intent Penetration Bar (ECharts) ---- */
+function renderIntentPenetration() {
+    var container = document.getElementById('intentPenetrationContainer');
+    if (!container || !biData) return;
+    if (intentChart) intentChart.dispose();
+
+    var ip = biData.global_metrics.intent_penetration;
+    if (!ip || !Object.keys(ip).length) return;
+
+    intentChart = echarts.init(container, 'dark');
+
+    var intents = Object.keys(ip).sort(function(a, b) { return ip[b] - ip[a]; });
+    var values = intents.map(function(k) { return Math.round(ip[k] * 10) / 10; });
+    var colors = values.map(function(v) {
+        if (v >= 50) return tc('green');
+        if (v >= 20) return tc('yellow');
+        return tc('red');
+    });
+
+    var INTENT_LABELS = {
+        comparison: 'Comparison',
+        recommendation: 'Recommendation',
+        brand_check: 'Brand Check',
+        custom: 'Custom',
+    };
+
+    intentChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+            trigger: 'axis',
+            axisPointer: { type: 'shadow' },
+            formatter: function(ps) { return ps[0].name + ': AIVS ' + ps[0].value; },
+        },
+        grid: { left: '25%', right: '10%', top: '5%', bottom: '10%' },
+        xAxis: {
+            type: 'value', min: 0, max: 100,
+            axisLabel: { color: '#64748b', fontSize: 10 },
+            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+        },
+        yAxis: {
+            type: 'category',
+            data: intents.map(function(k) { return INTENT_LABELS[k] || k; }),
+            axisLabel: { color: '#a0aec0', fontSize: 11 },
+            axisLine: { show: false },
+            axisTick: { show: false },
+        },
+        series: [{
+            type: 'bar',
+            data: values.map(function(v, i) {
+                return { value: v, itemStyle: { color: colors[i] } };
+            }),
+            barWidth: '50%',
+            label: {
+                show: true,
+                position: 'right',
+                formatter: '{c}',
+                color: '#e2e8f0',
+                fontSize: 11,
+            },
+        }],
+    });
+}
+
+/* ---- KPI Drill-Down Modal ---- */
+function exportKpiReport(format) {
+    if (!biData) {
+        showToast('No data to export', 'error');
+        return;
+    }
+    if (format === 'csv') {
+        var gm = biData.global_metrics;
+        var lines = ['Metric,Value'];
+        lines.push('AIVS,' + gm.aivs.toFixed(1));
+        lines.push('SoM (%),' + gm.som.toFixed(1));
+        lines.push('NSS,' + gm.nss.toFixed(1));
+        lines.push('Top-1 Win Rate (%),' + (gm.top1_win_rate !== null ? gm.top1_win_rate.toFixed(1) : 'N/A'));
+        lines.push('Hallucination Rate (%),' + (gm.hallucination_rate !== null ? (gm.hallucination_rate * 100).toFixed(1) : 'N/A'));
+        lines.push('Resilience Score,' + (gm.resilience_score || 0).toFixed(2));
+        lines.push('GEO Readiness Score,' + computeGeoReadiness());
+        // Competitive matrix
+        if (biData.competitive_matrix) {
+            lines.push('');
+            lines.push('Competitor,SoM (%),Mention Rate,Avg RVS');
+            lines.push(biData.competitive_matrix.target.name + ',' + biData.competitive_matrix.target.som.toFixed(1) + ',' + biData.competitive_matrix.target.mention_rate.toFixed(2) + ',' + biData.competitive_matrix.target.avg_rvs.toFixed(1));
+            biData.competitive_matrix.competitors.forEach(function(c) {
+                lines.push(c.name + ',' + c.som.toFixed(1) + ',' + c.mention_rate.toFixed(2) + ',' + c.avg_rvs.toFixed(1));
+            });
+        }
+        var csv = lines.join('\n');
+        var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'geo_kpi_report_' + new Date().toISOString().split('T')[0] + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast('CSV report downloaded', 'success');
+    } else if (format === 'pdf') {
+        showToast('PDF export coming soon — use CSV for now', 'info');
+    }
+}
+
+/* ---- Per-section CSV exports ---- */
+function downloadCSV(lines, filename) {
+    var csv = lines.join('\n');
+    var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function exportCompetitiveMatrix() {
+    if (!biData || !biData.competitive_matrix) {
+        showToast('No competitive data to export', 'error');
+        return;
+    }
+    var cm = biData.competitive_matrix;
+    var lines = ['Brand,SoM (%),Mention Rate,Avg RVS,Role'];
+    lines.push(cm.target.name + ',' + cm.target.som.toFixed(1) + ',' + cm.target.mention_rate.toFixed(3) + ',' + cm.target.avg_rvs.toFixed(1) + ',Target');
+    cm.competitors.forEach(function(c) {
+        lines.push(c.name + ',' + c.som.toFixed(1) + ',' + c.mention_rate.toFixed(3) + ',' + c.avg_rvs.toFixed(1) + ',Competitor');
+    });
+    downloadCSV(lines, 'competitive_matrix_' + new Date().toISOString().split('T')[0] + '.csv');
+    showToast('Competitive matrix exported', 'success');
+}
+
+function exportCitationGraph() {
+    if (!biData || !biData.citation_graph || !biData.citation_graph.domains.length) {
+        showToast('No citation data to export', 'error');
+        return;
+    }
+    var cg = biData.citation_graph;
+    var lines = ['Domain,Citation Count,Providers,In Competitor Wins'];
+    cg.domains.forEach(function(d) {
+        lines.push('"' + d.domain + '",' + d.count + ',"' + d.providers.join('; ') + '",' + (d.appears_in_competitor_wins ? 'Yes' : 'No'));
+    });
+    lines.push('');
+    lines.push('Total Citations,' + cg.total_citations);
+    downloadCSV(lines, 'citation_graph_' + new Date().toISOString().split('T')[0] + '.csv');
+    showToast('Citation graph exported', 'success');
+}
+
+function showDrillDown(metric) {
+    if (!dashData || !biData) return;
+    var providerOrder = ['yandexgpt', 'deepseek', 'perplexity', 'chatgpt', 'gemini', 'gigachat'];
+    var rates = dashData.mention_rate_by_provider || {};
+    var sovByProv = dashData.sov_by_provider || {};
+    var gm = biData.global_metrics;
+
+    var title = '';
+    var rows = '';
+
+    if (metric === 'aivs') {
+        title = 'AI Visibility Score — Breakdown by Provider';
+        // Show mention rate per provider as proxy for per-provider AIVS
+        rows = '<tr><th>Provider</th><th>Mention Rate</th><th>SOV</th><th>Bar</th></tr>';
+        providerOrder.forEach(function(p) {
+            if (!(p in rates)) return;
+            var mr = (rates[p] * 100).toFixed(1);
+            var sv = ((sovByProv[p] || 0) * 100).toFixed(1);
+            var color = PROVIDER_COLORS[p] || '#64748b';
+            rows += '<tr><td style="color:' + color + ';font-weight:600;">' + p + '</td>';
+            rows += '<td>' + mr + '%</td><td>' + sv + '%</td>';
+            rows += '<td><div class="progress-bar" style="height:8px;"><div class="progress-bar__fill" style="width:' + mr + '%;background:' + color + ';"></div></div></td></tr>';
+        });
+    } else if (metric === 'som') {
+        title = 'Share of Model — Brand vs Competitors';
+        rows = '<tr><th>Entity</th><th>SoM</th><th>Share</th></tr>';
+        var compSov = dashData.competitor_sov || {};
+        // Brand
+        rows += '<tr style="background:rgba(96,165,250,0.08);"><td><strong>' + escapeHtml(brandName || 'Your Brand') + '</strong></td>';
+        rows += '<td style="color:' + tc('green') + ';font-weight:600;">' + formatScore(gm.som) + '%</td>';
+        rows += '<td><div class="progress-bar" style="height:8px;"><div class="progress-bar__fill" style="width:' + Math.min(gm.som * 2, 100) + '%;background:' + tc('green') + ';"></div></div></td></tr>';
+        // Competitors
+        Object.keys(compSov).sort(function(a,b) { return compSov[b] - compSov[a]; }).forEach(function(comp) {
+            var pct = (compSov[comp] * 100).toFixed(1);
+            rows += '<tr><td>' + escapeHtml(comp) + '</td><td>' + pct + '%</td>';
+            rows += '<td><div class="progress-bar" style="height:8px;"><div class="progress-bar__fill" style="width:' + Math.min(compSov[comp] * 200, 100) + '%;background:' + tc('red') + ';"></div></div></td></tr>';
+        });
+    } else if (metric === 'nss') {
+        title = 'Net Sentiment — Details';
+        rows = '<tr><th>Metric</th><th>Value</th><th>Status</th></tr>';
+        var nssVal = gm.nss;
+        var nssStatus = nssVal >= 30 ? '🟢 Positive' : nssVal >= 0 ? '🟡 Neutral' : nssVal >= -30 ? '🟠 Slightly Negative' : '🔴 Negative';
+        rows += '<tr><td>Net Sentiment Score</td><td style="font-weight:600;">' + (nssVal >= 0 ? '+' : '') + formatScore(nssVal) + '</td><td>' + nssStatus + '</td></tr>';
+        if (gm.hallucination_rate !== null) {
+            rows += '<tr><td>Hallucination Rate</td><td>' + (gm.hallucination_rate * 100).toFixed(1) + '%</td>';
+            rows += '<td>' + (gm.hallucination_rate > 0.15 ? '🔴 High' : gm.hallucination_rate > 0.05 ? '🟡 Moderate' : '🟢 Low') + '</td></tr>';
+        }
+        rows += '<tr><td>Resilience Score</td><td>' + (gm.resilience_score * 100).toFixed(0) + '%</td>';
+        rows += '<td>' + (gm.resilience_score >= 0.8 ? '🟢 Stable' : gm.resilience_score >= 0.5 ? '🟡 Moderate' : '🔴 Unstable') + '</td></tr>';
+    } else if (metric === 'top1') {
+        title = 'Top-1 Win Rate — Provider Breakdown';
+        rows = '<tr><th>Provider</th><th>Mention Rate</th><th>SOV</th><th>Top-1 Proxy</th></tr>';
+        // Show per-provider metric — providers with high mention rate likely contribute to top-1 wins
+        providerOrder.forEach(function(p) {
+            if (!(p in rates)) return;
+            var mr = rates[p];
+            var sv = sovByProv[p] || 0;
+            var color = PROVIDER_COLORS[p] || '#64748b';
+            // Top-1 proxy: high SOV implies high listing placement
+            var topProxy = sv > 0.3 ? '🟢 Strong' : sv > 0.15 ? '🟡 Moderate' : '🔴 Low';
+            rows += '<tr><td style="color:' + color + ';font-weight:600;">' + p + '</td>';
+            rows += '<td>' + (mr * 100).toFixed(1) + '%</td>';
+            rows += '<td>' + (sv * 100).toFixed(1) + '%</td>';
+            rows += '<td>' + topProxy + '</td></tr>';
+        });
+        rows += '<tr style="background:rgba(251,191,36,0.08);border-top:2px solid rgba(251,191,36,0.3);">';
+        rows += '<td><strong>Overall Top-1 Win Rate</strong></td><td colspan="2" style="font-weight:600;color:' + tc('yellow') + ';">';
+        rows += (gm.top1_win_rate !== null ? formatScore(gm.top1_win_rate) + '%' : 'N/A') + '</td>';
+        rows += '<td>Across all providers</td></tr>';
+    } else if (metric === 'hallucination') {
+        title = 'Hallucination Rate — Analysis';
+        rows = '<tr><th>Aspect</th><th>Value</th><th>Assessment</th></tr>';
+        var hr = gm.hallucination_rate;
+        var hrPct = hr !== null ? (hr * 100).toFixed(1) : 'N/A';
+        var hrStatus = hr === null ? '⚪ No data' : hr > 0.15 ? '🔴 Critical — active fact errors in LLM outputs' : hr > 0.05 ? '🟡 Moderate — occasional inaccuracies' : '🟢 Low — responses mostly accurate';
+        rows += '<tr><td>Current Hallucination Rate</td><td style="font-weight:600;">' + hrPct + '%</td><td>' + hrStatus + '</td></tr>';
+        rows += '<tr><td>Resilience Score</td><td>' + (gm.resilience_score * 100).toFixed(0) + '%</td>';
+        rows += '<td>' + (gm.resilience_score >= 0.8 ? 'Consistent across retries' : 'Variable across retries') + '</td></tr>';
+        rows += '<tr><td>Net Sentiment Impact</td><td>' + (gm.nss >= 0 ? '+' : '') + formatScore(gm.nss) + '</td>';
+        rows += '<td>' + (gm.nss < 0 ? '⚠️ Negative sentiment may correlate with hallucinations' : '✓ Positive sentiment — hallucinations not dominant') + '</td></tr>';
+        // Risk factors
+        rows += '<tr style="background:rgba(248,113,113,0.06);"><td><strong>Risk Factors</strong></td><td colspan="2" style="font-size:0.8rem;">';
+        var risks = [];
+        if (hr > 0.1) risks.push('High error rate in generated facts');
+        if (gm.resilience_score < 0.5) risks.push('Low resilience — answers change between retries');
+        if (gm.nss < -20) risks.push('Negative brand sentiment amplifying misinformation');
+        rows += risks.length > 0 ? risks.join('<br>') : 'No significant risk factors detected';
+        rows += '</td></tr>';
+    } else if (metric === 'resilience') {
+        title = 'Resilience Score — Consistency Analysis';
+        rows = '<tr><th>Metric</th><th>Value</th><th>Assessment</th></tr>';
+        var rs = gm.resilience_score;
+        var rsPct = (rs * 100).toFixed(0);
+        var rsStatus = rs >= 0.8 ? '🟢 Excellent — brand appears consistently' : rs >= 0.5 ? '🟡 Moderate — some variation in responses' : '🔴 Low — answers vary significantly between queries';
+        rows += '<tr><td>Resilience Score</td><td style="font-weight:600;">' + rsPct + '%</td><td>' + rsStatus + '</td></tr>';
+        rows += '<tr><td>AIVS</td><td>' + formatScore(gm.aivs) + '</td>';
+        rows += '<td>' + (gm.aivs >= 50 ? 'Strong visibility supports consistency' : 'Low visibility may contribute to instability') + '</td></tr>';
+        rows += '<tr><td>Share of Model</td><td>' + formatScore(gm.som) + '%</td>';
+        rows += '<td>' + (gm.som >= 20 ? 'Strong market share' : 'Room to grow market presence') + '</td></tr>';
+        // Provider-level consistency
+        rows += '<tr style="background:rgba(52,211,153,0.06);"><td><strong>Consistency Tips</strong></td><td colspan="2" style="font-size:0.8rem;">';
+        var tips = [];
+        if (rs < 0.5) tips.push('Add structured data (FAQ, HowTo) for deterministic answers');
+        if (rs < 0.7) tips.push('Ensure key facts appear in multiple authoritative sources');
+        if (rs < 0.8) tips.push('Monitor paraphrase stability across providers');
+        tips.push('Track resilience weekly to detect regression');
+        rows += tips.join('<br>');
+        rows += '</td></tr>';
+    }
+
+    // Show modal
+    var modal = document.createElement('div');
+    modal.className = 'gcc-modal-overlay';
+    modal.onclick = function(e) { if (e.target === modal) modal.remove(); };
+    modal.innerHTML = '<div class="gcc-modal">'
+        + '<div class="gcc-modal__header"><h3>' + title + '</h3><button onclick="this.closest(\'.gcc-modal-overlay\').remove()" class="gcc-modal__close">&times;</button></div>'
+        + '<div class="gcc-modal__body"><table class="serp-table"><thead>' + rows.split('</tr>')[0] + '</tr></thead><tbody>' + rows.split('</tr>').slice(1).join('</tr>') + '</tbody></table></div>'
+        + '</div>';
+    document.body.appendChild(modal);
+}
+
+/* ================================================================
+   SCREEN 2: Tech & Crawl Architecture
+   ================================================================ */
+var robotsTxtCache = null; // Cache fetched robots.txt
+
+function renderTech() {
+    var panel = document.getElementById('panel-tech');
+    var html = '';
+
+    html += '<div class="gcc-stub-header">';
+    html += '<h2>Tech & Crawl Architecture</h2>';
+    html += '<p class="gcc-stub-desc">Control how LLM crawlers access your content. Validate structured data and semantic markup.</p>';
+    html += '</div>';
+
+    html += '<div class="gcc-stub-grid gcc-stub-grid--2col">';
+
+    /* ---- robots.txt Simulator ---- */
+    var domainUrl = projectDomain ? (projectDomain.match(/^https?:\/\//) ? projectDomain : 'https://' + projectDomain) : '';
+    html += '<div class="card gcc-stub-card">';
+    html += '<div class="card-header"><h3>' + tip('RobotsTxt', 'robots.txt Simulator (Bots Tester)') + '</h3></div>';
+    html += '<div class="gcc-stub-content">';
+    html += '<div class="gcc-bot-tester">';
+    html += '<div class="gcc-bot-tester__input">';
+    html += '<input type="text" id="robotsUrl" class="gcc-input" placeholder="Enter domain URL..." value="' + escapeHtml(domainUrl) + '">';
+    html += '<button class="btn btn-accent btn-sm" onclick="fetchRobotsTxt()">Fetch & Test</button>';
+    html += '</div>';
+    html += '<pre class="gcc-code-block" id="robotsCodeBlock">' + (robotsTxtCache ? escapeHtml(robotsTxtCache) : 'Press "Fetch & Test" to load robots.txt…') + '</pre>';
+    html += '<div id="botResults" class="gcc-bot-results">';
+    if (robotsTxtCache) {
+        html += analyzeRobotsTxt(robotsTxtCache);
+    }
+    html += '</div>';
+    html += '</div></div></div>';
+
+    /* ---- JSON-LD Schema Graph ---- */
+    html += '<div class="card gcc-stub-card">';
+    html += '<div class="card-header"><h3>' + tip('JsonLD', 'JSON-LD Schema Graph') + '</h3></div>';
+    html += '<div class="gcc-stub-content">';
+    html += '<div id="jsonldGraphContainer" style="height:320px;"></div>';
+    if (!geoAuditData || !geoAuditData.schema_audit || geoAuditData.schema_audit.types_found.length === 0) {
+        html += '<div class="gcc-stub-badge">Waiting for site audit data…</div>';
+    }
+    html += '</div></div>';
+
+    html += '</div>'; // grid
+
+    /* ---- LLM Crawl Access Summary ---- */
+    html += '<div class="card" style="margin-top:1rem;">';
+    html += '<div class="card-header"><h3>' + tip('CrawlAccess', 'LLM Crawl Access — Quick Summary') + '</h3></div>';
+    html += '<div class="gcc-stub-content">';
+    html += '<p class="gcc-stub-desc" style="margin-bottom:0.75rem;">Overview of which LLM providers can crawl your site based on robots.txt, meta tags, and HTTP headers.</p>';
+    html += '<table class="serp-table"><thead><tr><th>Bot</th><th>robots.txt</th><th>Crawl-Delay</th><th>Sitemap</th><th>Overall</th></tr></thead><tbody>';
+
+    if (geoAuditData && geoAuditData.crawl_access && geoAuditData.crawl_access.robots_bots.length > 0) {
+        var ca = geoAuditData.crawl_access;
+        ca.robots_bots.forEach(function(bot) {
+            var robotIcon = bot.allowed === true ? '<span style="color:' + tc('green') + ';">&#10003; Allowed</span>' :
+                            bot.allowed === false ? '<span style="color:' + tc('red') + ';">&#10007; Blocked</span>' :
+                            '<span style="color:' + tc('yellow') + ';">⚠ Not set</span>';
+            var delayStr = bot.crawl_delay != null ? '<span style="color:' + tc('yellow') + ';">' + bot.crawl_delay + 's</span>' : '<span style="color:' + tc('muted') + ';">—</span>';
+            var sitemapIcon = ca.sitemap_found ? '<span style="color:' + tc('green') + ';">&#10003;</span>' : '<span style="color:' + tc('muted') + ';">—</span>';
+            var overallOk = bot.allowed !== false;
+            var overall = overallOk ? '<span style="color:' + tc('green') + ';font-weight:600;">&#10003; Accessible</span>' : '<span style="color:' + tc('red') + ';font-weight:600;">&#10007; Blocked</span>';
+            html += '<tr><td><strong>' + escapeHtml(bot.bot) + '</strong></td><td>' + robotIcon + '</td><td>' + delayStr + '</td><td>' + sitemapIcon + '</td><td>' + overall + '</td></tr>';
+        });
+        html += '</tbody></table>';
+        if (ca.sitemap_found && ca.sitemap_url) {
+            html += '<p style="margin-top:0.5rem;font-size:0.8rem;color:#a0aec0;">Sitemap found: <code>' + escapeHtml(ca.sitemap_url) + '</code></p>';
+        }
+        // Meta robots summary
+        if (ca.meta_robots && ca.meta_robots.length > 0) {
+            var metaIssues = ca.meta_robots.filter(function(m) { return m.meta_robots || m.x_robots_tag; });
+            if (metaIssues.length > 0) {
+                html += '<div style="margin-top:0.75rem;">';
+                html += '<p style="font-size:0.85rem;color:' + tc('yellow') + ';margin-bottom:0.4rem;">⚠ Pages with meta robots / X-Robots-Tag directives:</p>';
+                metaIssues.forEach(function(m) {
+                    html += '<div style="font-size:0.8rem;color:#a0aec0;">';
+                    html += '<code>' + escapeHtml(m.url) + '</code>';
+                    if (m.meta_robots) html += ' — meta: <code>' + escapeHtml(m.meta_robots) + '</code>';
+                    if (m.x_robots_tag) html += ' — X-Robots: <code>' + escapeHtml(m.x_robots_tag) + '</code>';
+                    html += '</div>';
+                });
+                html += '</div>';
+            }
+        }
+    } else {
+        // Fallback to client-side robots.txt analysis
+        var crawlProviders = [
+            { name: 'GPTBot', robot: null }, { name: 'Googlebot', robot: null },
+            { name: 'ClaudeBot', robot: null }, { name: 'PerplexityBot', robot: null },
+            { name: 'YandexBot', robot: null },
+        ];
+        if (robotsTxtCache) {
+            var lines = robotsTxtCache.split('\n');
+            crawlProviders.forEach(function(p) { p.robot = checkBotAccess(lines, p.name); });
+        }
+        crawlProviders.forEach(function(p) {
+            var robotIcon = p.robot === 'allowed' ? '<span style="color:' + tc('green') + ';">&#10003; Allowed</span>' :
+                            p.robot === 'blocked' ? '<span style="color:' + tc('red') + ';">&#10007; Blocked</span>' :
+                            p.robot === 'not_mentioned' ? '<span style="color:' + tc('yellow') + ';">⚠ Not set</span>' :
+                            '<span style="color:' + tc('muted') + ';">—</span>';
+            html += '<tr><td><strong>' + p.name + '</strong></td><td>' + robotIcon + '</td><td>—</td><td>—</td><td>—</td></tr>';
+        });
+        html += '</tbody></table>';
+        html += '<div class="gcc-stub-badge">Fetch robots.txt above or wait for site audit to load</div>';
+    }
+    html += '</div></div>';
+
+    /* ---- Schema.org Quick Audit ---- */
+    html += '<div class="card" style="margin-top:1rem;">';
+    html += '<div class="card-header"><h3>' + tip('SchemaAudit', 'Schema.org Quick Audit') + '</h3>';
+    if (geoAuditData && geoAuditData.schema_audit) {
+        html += '<span style="font-size:0.75rem;color:#a0aec0;margin-left:0.5rem;">' + geoAuditData.pages_scanned + ' pages scanned</span>';
+    }
+    html += '</div>';
+    html += '<div class="gcc-stub-content">';
+
+    if (geoAuditData && geoAuditData.schema_audit) {
+        var sa = geoAuditData.schema_audit;
+
+        // Found types table
+        if (sa.types_found.length > 0) {
+            html += '<p style="font-size:0.85rem;color:' + tc('green') + ';margin-bottom:0.5rem;">✓ Found structured data (' + sa.types_found.length + ' types):</p>';
+            html += '<table class="serp-table"><thead><tr><th>Schema Type</th><th>Page</th><th>Properties</th></tr></thead><tbody>';
+            sa.types_found.forEach(function(t) {
+                var shortUrl = t.page_url.replace(/^https?:\/\/[^\/]+/, '').substring(0, 50) || '/';
+                html += '<tr><td><code style="color:' + tc('green') + ';">' + escapeHtml(t.type_name) + '</code></td>';
+                html += '<td style="font-size:0.8rem;"><code>' + escapeHtml(shortUrl) + '</code></td>';
+                html += '<td>' + t.properties_count + '</td></tr>';
+            });
+            html += '</tbody></table>';
+        } else {
+            html += '<p style="color:' + tc('red') + ';margin-bottom:0.5rem;">✗ No JSON-LD structured data found on scanned pages</p>';
+        }
+
+        // Missing recommended types
+        if (sa.recommended_missing.length > 0) {
+            html += '<div style="margin-top:0.75rem;">';
+            html += '<p style="font-size:0.85rem;color:' + tc('yellow') + ';margin-bottom:0.4rem;">Missing recommended types:</p>';
+            html += '<div style="display:flex;flex-wrap:wrap;gap:0.4rem;">';
+            sa.recommended_missing.forEach(function(t) {
+                html += '<span style="background:rgba(251,191,36,0.1);color:' + tc('yellow') + ';padding:2px 8px;border-radius:4px;font-size:0.8rem;">' + escapeHtml(t) + '</span>';
+            });
+            html += '</div></div>';
+        }
+    } else {
+        // Static reference table as fallback
+        html += '<p class="gcc-stub-desc" style="margin-bottom:0.75rem;">Recommended structured data types for LLM citability:</p>';
+        html += '<table class="serp-table"><thead><tr><th>Schema Type</th><th>LLM Impact</th><th>Priority</th></tr></thead><tbody>';
+        var schemaRef = [
+            { type: 'Organization', impact: 'High', priority: 'Critical' },
+            { type: 'FAQPage', impact: 'High', priority: 'Critical' },
+            { type: 'Article', impact: 'Medium', priority: 'High' },
+            { type: 'Product', impact: 'Medium', priority: 'High' },
+            { type: 'Review', impact: 'Medium', priority: 'Medium' },
+            { type: 'LocalBusiness', impact: 'High', priority: 'High' },
+            { type: 'BreadcrumbList', impact: 'Low', priority: 'Medium' },
+        ];
+        schemaRef.forEach(function(s) {
+            var ic = s.impact === 'High' ? tc('green') : s.impact === 'Medium' ? tc('yellow') : tc('muted');
+            var pc = s.priority === 'Critical' ? tc('red') : s.priority === 'High' ? tc('orange') : tc('yellow');
+            html += '<tr><td><code>' + s.type + '</code></td><td style="color:' + ic + ';">' + s.impact + '</td><td style="color:' + pc + ';font-weight:600;">' + s.priority + '</td></tr>';
+        });
+        html += '</tbody></table>';
+        html += '<div class="gcc-stub-badge">Site audit loading…</div>';
+    }
+
+    html += '</div></div>';
+
+    panel.innerHTML = html;
+
+    renderJsonLdGraph();
+}
+
+/* ---- robots.txt fetch & analyze ---- */
+async function fetchRobotsTxt() {
+    var urlInput = document.getElementById('robotsUrl');
+    var codeBlock = document.getElementById('robotsCodeBlock');
+    var results = document.getElementById('botResults');
+    var url = (urlInput.value || '').trim();
+    if (!url) { codeBlock.textContent = 'Please enter a URL'; return; }
+    // Extract bare domain
+    var domain = url.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    if (!domain) { codeBlock.textContent = 'Invalid domain'; return; }
+
+    codeBlock.textContent = 'Fetching robots.txt for ' + domain + '…';
+    results.innerHTML = '';
+
+    try {
+        // Use our backend CORS proxy
+        var resp = await apiFetch('/api/v1/geo-audit/robots-proxy?url=' + encodeURIComponent(domain));
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        var text = await resp.text();
+        if (text.length > 10000) text = text.substring(0, 10000) + '\n\n... (truncated)';
+        robotsTxtCache = text;
+        codeBlock.textContent = text;
+        results.innerHTML = analyzeRobotsTxt(text);
+    } catch(e) {
+        codeBlock.textContent = 'Could not fetch robots.txt for ' + domain + '.\n\nError: ' + e.message;
+        robotsTxtCache = null;
+        results.innerHTML = '<div class="gcc-bot-status gcc-bot-status--warn"><span class="gcc-bot-name">Error</span><span class="gcc-bot-badge">' + escapeHtml(e.message) + '</span></div>';
+    }
+}
+
+function analyzeRobotsTxt(text) {
+    var bots = [
+        { ua: 'GPTBot', llm: 'chatgpt', label: 'GPTBot (OpenAI)' },
+        { ua: 'Google-Extended', llm: 'gemini', label: 'Google-Extended' },
+        { ua: 'ClaudeBot', llm: 'claude', label: 'ClaudeBot (Anthropic)' },
+        { ua: 'PerplexityBot', llm: 'perplexity', label: 'PerplexityBot' },
+        { ua: 'YandexAdditionalBot', llm: 'yandexgpt', label: 'YandexAdditionalBot' },
+        { ua: 'ChatGPT-User', llm: 'chatgpt', label: 'ChatGPT-User' },
+        { ua: 'Googlebot', llm: '', label: 'Googlebot' },
+        { ua: 'YandexBot', llm: '', label: 'YandexBot' },
+    ];
+
+    var lines = text.split('\n');
+    var html = '';
+
+    bots.forEach(function(bot) {
+        var status = checkBotAccess(lines, bot.ua);
+        var cls = status === 'allowed' ? 'gcc-bot-status--ok' : status === 'blocked' ? 'gcc-bot-status--blocked' : 'gcc-bot-status--warn';
+        var badge = status === 'allowed' ? 'Allowed' : status === 'blocked' ? 'Blocked' : 'Not mentioned';
+        html += '<div class="gcc-bot-status ' + cls + '">';
+        html += '<span class="gcc-bot-name">' + bot.label + '</span>';
+        html += '<span class="gcc-bot-badge">' + badge + '</span>';
+        html += '</div>';
+    });
+
+    return html;
+}
+
+function checkBotAccess(lines, userAgent) {
+    // Simple robots.txt parser: find User-agent block and check Allow/Disallow
+    var inBlock = false;
+    var inWildcard = false;
+    var explicitAllow = false;
+    var explicitDisallow = false;
+    var wildcardDisallow = false;
+
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (line.startsWith('#') || line === '') {
+            if (line === '' && inBlock) inBlock = false;
+            if (line === '' && inWildcard) inWildcard = false;
+            continue;
+        }
+        var parts = line.split(':');
+        if (parts.length < 2) continue;
+        var key = parts[0].trim().toLowerCase();
+        var val = parts.slice(1).join(':').trim();
+
+        if (key === 'user-agent') {
+            if (val === userAgent || val.toLowerCase() === userAgent.toLowerCase()) {
+                inBlock = true; inWildcard = false;
+            } else if (val === '*') {
+                inWildcard = true; inBlock = false;
+            } else {
+                inBlock = false; inWildcard = false;
+            }
+        } else if (key === 'disallow' && val === '/') {
+            if (inBlock) explicitDisallow = true;
+            if (inWildcard) wildcardDisallow = true;
+        } else if (key === 'allow' && val === '/') {
+            if (inBlock) explicitAllow = true;
+        }
+    }
+
+    if (explicitDisallow) return 'blocked';
+    if (explicitAllow) return 'allowed';
+    if (wildcardDisallow) return 'blocked';
+    // Check if bot is mentioned at all
+    var mentioned = lines.some(function(l) { return l.toLowerCase().indexOf(userAgent.toLowerCase()) >= 0; });
+    if (mentioned) return 'allowed';
+    return 'not_mentioned';
+}
+
+function renderJsonLdGraph() {
+    var c = document.getElementById('jsonldGraphContainer');
+    if (!c) return;
+    if (jsonldGraphChart) jsonldGraphChart.dispose();
+
+    jsonldGraphChart = echarts.init(c, 'dark');
+    var nodes = [];
+    var links = [];
+    var typeColors = {
+        'Organization': '#60a5fa', 'LocalBusiness': '#34d399', 'Product': '#a78bfa',
+        'FAQPage': '#fbbf24', 'Article': '#f87171', 'Review': '#2dd4bf',
+        'HowTo': '#fb923c', 'Person': '#d4a574', 'WebSite': '#818cf8',
+        'BreadcrumbList': '#64748b', 'NewsArticle': '#f87171',
+    };
+    var defaultColor = '#94a3b8';
+
+    // Build from real audit data if available
+    if (geoAuditData && geoAuditData.schema_audit && geoAuditData.schema_audit.types_found.length > 0) {
+        var typeMap = {}; // type_name -> { count, pages[] }
+        geoAuditData.schema_audit.types_found.forEach(function(t) {
+            if (!typeMap[t.type_name]) typeMap[t.type_name] = { count: 0, pages: [], props: 0 };
+            typeMap[t.type_name].count++;
+            typeMap[t.type_name].props = Math.max(typeMap[t.type_name].props, t.properties_count);
+            var shortPage = t.page_url.replace(/^https?:\/\/[^\/]+/, '').substring(0, 30) || '/';
+            if (typeMap[t.type_name].pages.indexOf(shortPage) < 0) typeMap[t.type_name].pages.push(shortPage);
+        });
+
+        // Central domain node
+        var domainLabel = geoAuditData.domain || projectDomain || 'Site';
+        nodes.push({ name: domainLabel, symbolSize: 50, itemStyle: { color: '#3b82f6' }, label: { show: true, fontSize: 11 } });
+
+        Object.keys(typeMap).forEach(function(typeName) {
+            var info = typeMap[typeName];
+            var size = Math.min(20 + info.count * 8 + info.props * 0.5, 45);
+            var color = typeColors[typeName] || defaultColor;
+            var label = typeName + (info.count > 1 ? ' ×' + info.count : '');
+            nodes.push({ name: label, symbolSize: size, itemStyle: { color: color }, label: { show: true } });
+            links.push({ source: domainLabel, target: label, lineStyle: { color: color, width: 1.5 } });
+        });
+    } else {
+        // Fallback mock graph
+        nodes = [
+            { name: 'Organization', symbolSize: 50, itemStyle: { color: '#60a5fa' }, label: { show: true } },
+            { name: 'Product', symbolSize: 30, itemStyle: { color: '#a78bfa' }, label: { show: true } },
+            { name: 'FAQPage', symbolSize: 28, itemStyle: { color: '#fbbf24' }, label: { show: true } },
+            { name: 'Article', symbolSize: 25, itemStyle: { color: '#f87171' }, label: { show: true } },
+            { name: 'Review', symbolSize: 22, itemStyle: { color: '#2dd4bf' }, label: { show: true } },
+        ];
+        links = [
+            { source: 'Organization', target: 'Product', lineStyle: { color: '#a78bfa', width: 1.5 } },
+            { source: 'Organization', target: 'FAQPage', lineStyle: { color: '#fbbf24', width: 1.5 } },
+            { source: 'Organization', target: 'Article', lineStyle: { color: '#f87171', width: 1.5 } },
+            { source: 'Product', target: 'Review', lineStyle: { color: '#2dd4bf', width: 1 } },
+        ];
+    }
+
+    jsonldGraphChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {},
+        animationDurationUpdate: 1500,
+        animationEasingUpdate: 'quinticInOut',
+        series: [{
+            type: 'graph', layout: 'force', roam: true,
+            data: nodes, links: links,
+            label: { color: '#e2e8f0', fontSize: 10 },
+            force: { repulsion: 300, edgeLength: [80, 150], gravity: 0.1 },
+            emphasis: { focus: 'adjacency', lineStyle: { width: 3 } },
+        }]
+    });
+}
+
+/* ================================================================
+   SCREEN 3: Citable Content Lab (STUB)
+   ================================================================ */
+function renderContent() {
+    var panel = document.getElementById('panel-content');
+    var html = '';
+
+    html += '<div class="gcc-stub-header">';
+    html += '<h2>Citable Content Lab</h2>';
+    html += '<p class="gcc-stub-desc">Analyze and optimize your content for LLM citability. Write for machine reading.</p>';
+    html += '</div>';
+
+    html += '<div class="gcc-stub-grid gcc-stub-grid--2col">';
+
+    /* ---- Answer-First Scanner ---- */
+    html += '<div class="card gcc-stub-card">';
+    html += '<div class="card-header"><h3>' + tip('AnswerFirst', 'Answer-First Scanner') + '</h3></div>';
+    html += '<div class="gcc-stub-content">';
+    html += '<p class="gcc-stub-desc" style="margin-bottom:0.75rem;">Checks if your pages lead with a direct answer in the first paragraph.</p>';
+    html += '<table class="serp-table"><thead><tr><th>Page</th><th>Score</th><th>1st ¶ Length</th><th>Summary Pattern</th><th>Status</th></tr></thead><tbody>';
+
+    if (geoAuditData && geoAuditData.content_audit && geoAuditData.content_audit.answer_first.length > 0) {
+        geoAuditData.content_audit.answer_first.forEach(function(p) {
+            var color = p.score >= 70 ? tc('green') : p.score >= 40 ? tc('yellow') : tc('red');
+            var shortUrl = p.url.replace(/^https?:\/\/[^\/]+/, '').substring(0, 40) || '/';
+            html += '<tr><td><code title="' + escapeHtml(p.title) + '">' + escapeHtml(shortUrl) + '</code></td>';
+            html += '<td style="color:' + color + ';font-weight:600;">' + p.score.toFixed(0) + '</td>';
+            html += '<td>' + p.first_p_length + ' chars</td>';
+            html += '<td>' + (p.has_summary_pattern ? '<span style="color:' + tc('green') + ';">&#10003;</span>' : '<span style="color:' + tc('muted') + ';">—</span>') + '</td>';
+            html += '<td><span style="color:' + color + ';">&#9679;</span></td></tr>';
+        });
+    } else {
+        html += '<tr><td colspan="5" style="color:' + tc('muted') + ';text-align:center;">Waiting for site audit…</td></tr>';
+    }
+
+    html += '</tbody></table>';
+    if (geoAuditData && geoAuditData.content_audit) {
+        html += '<p style="font-size:0.75rem;color:' + tc('muted') + ';margin-top:0.4rem;">' + geoAuditData.pages_scanned + ' pages scanned from ' + escapeHtml(geoAuditData.domain) + '</p>';
+    }
+    html += '</div></div>';
+
+    /* ---- E-E-A-T Checker ---- */
+    html += '<div class="card gcc-stub-card">';
+    html += '<div class="card-header"><h3>' + tip('EEAT', 'E-E-A-T Signals Checker') + '</h3></div>';
+    html += '<div class="gcc-stub-content">';
+    html += '<p class="gcc-stub-desc" style="margin-bottom:0.75rem;">Verifies author markup, date published, citations, and trust signals.</p>';
+    html += '<table class="serp-table"><thead><tr><th>Page</th><th>Author</th><th>Date</th><th>References</th><th>About Link</th><th>Schema Author</th></tr></thead><tbody>';
+
+    if (geoAuditData && geoAuditData.content_audit && geoAuditData.content_audit.eeat.length > 0) {
+        function dot(v) { return v ? '<span style="color:' + tc('green') + ';">&#10003;</span>' : '<span style="color:' + tc('red') + ';">&#10007;</span>'; }
+        geoAuditData.content_audit.eeat.forEach(function(p) {
+            var shortUrl = p.url.replace(/^https?:\/\/[^\/]+/, '').substring(0, 35) || '/';
+            var signals = (p.has_author?1:0) + (p.has_date_published?1:0) + (p.has_references?1:0) + (p.has_about_page_link?1:0) + (p.schema_author?1:0);
+            var rowBg = signals >= 4 ? 'rgba(52,211,153,0.04)' : signals <= 1 ? 'rgba(248,113,113,0.04)' : '';
+            html += '<tr' + (rowBg ? ' style="background:' + rowBg + ';"' : '') + '>';
+            html += '<td><code>' + escapeHtml(shortUrl) + '</code></td>';
+            html += '<td>' + dot(p.has_author) + '</td>';
+            html += '<td>' + dot(p.has_date_published) + '</td>';
+            html += '<td>' + dot(p.has_references) + '</td>';
+            html += '<td>' + dot(p.has_about_page_link) + '</td>';
+            html += '<td>' + dot(p.schema_author) + '</td></tr>';
+        });
+    } else {
+        html += '<tr><td colspan="6" style="color:' + tc('muted') + ';text-align:center;">Waiting for site audit…</td></tr>';
+    }
+
+    html += '</tbody></table>';
+    html += '</div></div>';
+
+    html += '</div>'; // grid
+
+    /* ---- Top Cited URLs (REAL DATA) ---- */
+    if (dashData && dashData.top_cited_urls && dashData.top_cited_urls.length > 0) {
+        html += '<div class="card" style="margin-top:1rem;">';
+        html += '<div class="card-header"><h3>' + tip('TopCited', 'Top Cited URLs (Real Data)') + '</h3></div>';
+        html += '<div class="gcc-stub-content">';
+        html += '<p class="gcc-stub-desc" style="margin-bottom:0.75rem;">URLs actually cited by LLMs in their responses about your brand.</p>';
+        html += '<table class="serp-table"><thead><tr><th>#</th><th>URL</th><th>Citations</th></tr></thead><tbody>';
+        dashData.top_cited_urls.slice(0, 15).forEach(function(item, i) {
+            var url = item.url || '';
+            var count = item.count || 0;
+            var isOwn = projectDomain && url.indexOf(projectDomain) >= 0;
+            html += '<tr' + (isOwn ? ' style="background:rgba(52,211,153,0.06);"' : '') + '>';
+            html += '<td>' + (i + 1) + '</td>';
+            html += '<td><code style="word-break:break-all;">' + escapeHtml(url) + '</code>' + (isOwn ? ' <span style="color:' + tc('green') + ';font-size:0.7rem;">YOUR SITE</span>' : '') + '</td>';
+            html += '<td style="font-weight:600;">' + count + '</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        html += '</div></div>';
+    }
+
+    /* ---- Citation Domain Breakdown (REAL DATA from BI) ---- */
+    if (biData && biData.citation_graph && biData.citation_graph.domains.length > 0) {
+        html += '<div class="card" style="margin-top:1rem;">';
+        html += '<div class="card-header"><h3>Citation Sources — Your Content vs Competitors</h3></div>';
+        html += '<div class="gcc-stub-content">';
+        var ownCitations = 0;
+        var compCitations = 0;
+        var totalCit = biData.citation_graph.total_citations;
+        biData.citation_graph.domains.forEach(function(d) {
+            if (projectDomain && d.domain.indexOf(projectDomain.replace(/^www\./, '')) >= 0) {
+                ownCitations += d.count;
+            } else if (d.appears_in_competitor_wins) {
+                compCitations += d.count;
+            }
+        });
+        var ownPct = totalCit > 0 ? (ownCitations / totalCit * 100).toFixed(1) : '0';
+        var compPct = totalCit > 0 ? (compCitations / totalCit * 100).toFixed(1) : '0';
+        html += '<div style="display:flex;gap:1.5rem;margin-bottom:1rem;">';
+        html += '<div class="metric-card" style="flex:1;"><div class="metric-card__header">Your Domain Citations</div>';
+        html += '<div class="metric-card__value" style="color:' + tc('green') + ';">' + ownCitations + ' <span style="font-size:0.8rem;color:#a0aec0;">(' + ownPct + '%)</span></div></div>';
+        html += '<div class="metric-card" style="flex:1;"><div class="metric-card__header">Competitor Domain Citations</div>';
+        html += '<div class="metric-card__value" style="color:' + tc('red') + ';">' + compCitations + ' <span style="font-size:0.8rem;color:#a0aec0;">(' + compPct + '%)</span></div></div>';
+        html += '<div class="metric-card" style="flex:1;"><div class="metric-card__header">Total Citations</div>';
+        html += '<div class="metric-card__value" style="color:var(--accent);">' + totalCit + '</div></div>';
+        html += '</div></div></div>';
+    }
+
+    /* ---- Freshness Scatter Plot ---- */
+    html += '<div class="card" style="margin-top:1rem;">';
+    html += '<div class="card-header"><h3>' + tip('Freshness', 'Content Freshness Impact') + '</h3></div>';
+    html += '<div id="freshnessScatterContainer" style="height:300px;"></div>';
+    if (!geoAuditData || !geoAuditData.content_audit || geoAuditData.content_audit.freshness.length === 0) {
+        html += '<div class="gcc-stub-badge">Waiting for site audit data…</div>';
+    }
+    html += '</div>';
+
+    panel.innerHTML = html;
+
+    renderFreshnessScatter();
+}
+
+function renderFreshnessScatter() {
+    var c = document.getElementById('freshnessScatterContainer');
+    if (!c) return;
+    if (freshnessChart) freshnessChart.dispose();
+
+    freshnessChart = echarts.init(c, 'dark');
+    var scatterData = [];
+
+    // Use real freshness data from GEO audit if available
+    if (geoAuditData && geoAuditData.content_audit && geoAuditData.content_audit.freshness.length > 0) {
+        geoAuditData.content_audit.freshness.forEach(function(f) {
+            var days = f.freshness_days != null ? f.freshness_days : 999;
+            var shortUrl = f.url.replace(/^https?:\/\/[^\/]+/, '').substring(0, 30) || '/';
+            // Bubble size: larger for pages with more date signals
+            var signals = (f.last_modified_header ? 1 : 0) + (f.json_ld_date_modified ? 1 : 0) + (f.meta_article_modified ? 1 : 0);
+            var size = 15 + signals * 8;
+            // Y-axis: freshness score (inverse of days, capped at 100)
+            var freshScore = days < 999 ? Math.max(0, 100 - days * 0.5) : 0;
+            scatterData.push([days, freshScore, size, shortUrl]);
+        });
+    } else {
+        // Fallback mock data
+        scatterData = [
+            [10, 75, 30, '/pricing'], [25, 68, 25, '/features'],
+            [60, 52, 20, '/blog/seo-tips'], [120, 35, 35, '/blog/guide-2025'],
+            [200, 18, 40, '/blog/old-report'], [45, 62, 15, '/faq'],
+            [5, 82, 20, '/blog/latest-news'], [90, 42, 28, '/case-studies'],
+        ];
+    }
+
+    freshnessChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+            formatter: function(p) {
+                var d = p.data;
+                return d[3] + '<br/>Updated: ' + (d[0] < 999 ? d[0] + ' days ago' : 'Unknown') + '<br/>Freshness: ' + d[1].toFixed(0);
+            }
+        },
+        grid: { left: '10%', right: '5%', top: '10%', bottom: '15%' },
+        xAxis: {
+            name: 'Days since update',
+            nameLocation: 'middle', nameGap: 30,
+            nameTextStyle: { color: '#a0aec0', fontSize: 11 },
+            axisLabel: { color: '#64748b', fontSize: 10 },
+            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+        },
+        yAxis: {
+            name: 'Freshness Score',
+            nameLocation: 'middle', nameGap: 40,
+            nameTextStyle: { color: '#a0aec0', fontSize: 11 },
+            axisLabel: { color: '#64748b', fontSize: 10 },
+            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+        },
+        visualMap: {
+            show: false, dimension: 0, min: 0, max: 200,
+            inRange: { color: ['#34d399', '#fbbf24', '#f87171'] },
+        },
+        series: [{
+            type: 'scatter',
+            symbolSize: function(d) { return d[2]; },
+            data: scatterData,
+            label: {
+                show: true,
+                formatter: function(p) { return p.data[3]; },
+                position: 'top', color: '#a0aec0', fontSize: 9,
+            },
+        }],
+    });
+}
+
+/* ================================================================
+   SCREEN 4: Spatial GEO
+   ================================================================ */
+function renderSpatial() {
+    var panel = document.getElementById('panel-spatial');
+    var html = '';
+
+    html += '<div class="gcc-stub-header">';
+    html += '<h2>Spatial GEO (Regional Branches)</h2>';
+    html += '<p class="gcc-stub-desc">Manage hyperlocal search presence. NAP consistency, review velocity and local schema across directories.</p>';
+    html += '</div>';
+
+    /* ---- Geo-Targeting Summary (real project data) ---- */
+    html += '<div class="gcc-kpi-cards" style="margin-bottom:1rem;">';
+    var regionLabel = biData && biData.global_metrics ? 'Active' : 'Unknown';
+    html += '<div class="metric-card"><div class="metric-card__header">Project Region (Yandex)</div>';
+    html += '<div class="metric-card__value">' + (projectData && projectData.region_yandex ? projectData.region_yandex : '213') + '</div>';
+    html += '<div class="metric-card__footer">Region code</div></div>';
+    html += '<div class="metric-card"><div class="metric-card__header">Project Region (Google)</div>';
+    html += '<div class="metric-card__value" style="font-size:1rem;">' + escapeHtml(projectData && projectData.region_google ? projectData.region_google : 'Default') + '</div>';
+    html += '<div class="metric-card__footer">Location target</div></div>';
+    html += '<div class="metric-card"><div class="metric-card__header">Domain</div>';
+    html += '<div class="metric-card__value" style="font-size:1rem;">' + escapeHtml(projectDomain || 'Not set') + '</div>';
+    html += '<div class="metric-card__footer">Primary domain</div></div>';
+    html += '<div class="metric-card"><div class="metric-card__header">Market</div>';
+    html += '<div class="metric-card__value">' + escapeHtml(projectData && projectData.market ? projectData.market.toUpperCase() : 'RU') + '</div>';
+    html += '<div class="metric-card__footer">Target market</div></div>';
+    html += '</div>';
+
+    html += '<div class="gcc-stub-grid gcc-stub-grid--2col">';
+
+    /* ---- NAP Consistency Heatmap ---- */
+    html += '<div class="card gcc-stub-card">';
+    html += '<div class="card-header"><h3>' + tip('NAP', 'NAP Consistency Matrix') + '</h3></div>';
+    html += '<div class="gcc-stub-content">';
+    html += '<div style="overflow-x:auto;">';
+    html += '<table class="serp-table gcc-nap-table"><thead><tr>';
+    html += '<th>Branch</th><th>Google</th><th>Yandex Maps</th><th>2GIS</th><th>Apple</th><th>Bing</th><th>Avg</th>';
+    html += '</tr></thead><tbody>';
+    var mockNAP = [
+        { branch: 'Moscow HQ', scores: [100, 100, 95, 100, 90] },
+        { branch: 'St. Petersburg', scores: [100, 85, 100, 80, 70] },
+        { branch: 'Kazan', scores: [90, 100, 80, 60, 50] },
+        { branch: 'Novosibirsk', scores: [70, 75, 90, 40, 30] },
+        { branch: 'Ekaterinburg', scores: [85, 90, 75, 55, 45] },
+    ];
+    mockNAP.forEach(function(b) {
+        var avg = Math.round(b.scores.reduce(function(a,c){return a+c;},0) / b.scores.length);
+        html += '<tr><td><strong>' + b.branch + '</strong></td>';
+        b.scores.forEach(function(s) {
+            var color = s >= 90 ? tc('green') : s >= 70 ? tc('yellow') : tc('red');
+            var bg = s >= 90 ? 'rgba(52,211,153,0.1)' : s >= 70 ? 'rgba(251,191,36,0.1)' : 'rgba(248,113,113,0.1)';
+            html += '<td style="color:' + color + ';background:' + bg + ';text-align:center;font-weight:600;">' + s + '%</td>';
+        });
+        var avgColor = avg >= 90 ? tc('green') : avg >= 70 ? tc('yellow') : tc('red');
+        html += '<td style="color:' + avgColor + ';font-weight:700;text-align:center;">' + avg + '%</td>';
+        html += '</tr>';
+    });
+    // Summary row
+    var dirs = ['Google', 'Yandex Maps', '2GIS', 'Apple', 'Bing'];
+    html += '<tr class="gcc-nap-summary"><td><strong>Average</strong></td>';
+    for (var di = 0; di < 5; di++) {
+        var colAvg = Math.round(mockNAP.reduce(function(a,b){return a+b.scores[di];},0) / mockNAP.length);
+        var cc = colAvg >= 90 ? tc('green') : colAvg >= 70 ? tc('yellow') : tc('red');
+        html += '<td style="color:' + cc + ';font-weight:700;text-align:center;">' + colAvg + '%</td>';
+    }
+    var totalAvg = Math.round(mockNAP.reduce(function(a,b){return a + b.scores.reduce(function(x,y){return x+y;},0)/5;},0) / mockNAP.length);
+    var totalColor = totalAvg >= 90 ? tc('green') : totalAvg >= 70 ? tc('yellow') : tc('red');
+    html += '<td style="color:' + totalColor + ';font-weight:700;text-align:center;border-left:2px solid var(--border);">' + totalAvg + '%</td>';
+    html += '</tr>';
+    html += '</tbody></table></div>';
+    html += '<div class="gcc-stub-badge">Mock data — connect directories for real audit</div>';
+    html += '</div></div>';
+
+    /* ---- Review Velocity ---- */
+    html += '<div class="card gcc-stub-card">';
+    html += '<div class="card-header"><h3>' + tip('ReviewVelocity', 'Review Velocity & Sentiment Trend') + '</h3></div>';
+    html += '<div class="gcc-stub-content">';
+    html += '<div style="height:280px;"><canvas id="reviewVelocityCanvas"></canvas></div>';
+    html += '<div class="gcc-stub-badge">Mock data — connect review sources for real tracking</div>';
+    html += '</div></div>';
+
+    html += '</div>'; // grid
+
+    /* ---- Local Schema Audit ---- */
+    html += '<div class="card" style="margin-top:1rem;">';
+    html += '<div class="card-header"><h3>' + tip('LocalSchema', 'Local Schema Markup Audit') + '</h3></div>';
+    html += '<div class="gcc-stub-content">';
+    html += '<p class="gcc-stub-desc" style="margin-bottom:0.75rem;">Checks presence and completeness of LocalBusiness, Organization and GeoCoordinates schema types on key pages.</p>';
+    html += '<table class="serp-table"><thead><tr><th>Page</th><th>LocalBusiness</th><th>Organization</th><th>GeoCoords</th><th>OpeningHours</th><th>AggregateRating</th><th>Score</th></tr></thead><tbody>';
+    var mockSchema = [
+        { url: '/', lb: true, org: true, geo: true, hours: true, rating: false, score: 80 },
+        { url: '/contacts', lb: true, org: false, geo: true, hours: true, rating: false, score: 60 },
+        { url: '/moscow', lb: true, org: true, geo: true, hours: true, rating: true, score: 100 },
+        { url: '/spb', lb: true, org: true, geo: false, hours: true, rating: true, score: 80 },
+        { url: '/kazan', lb: true, org: false, geo: false, hours: false, rating: false, score: 20 },
+    ];
+    function schemaCheck(v) { return v ? '<span style="color:' + tc('green') + ';">&#10003;</span>' : '<span style="color:' + tc('red') + ';">&#10007;</span>'; }
+    mockSchema.forEach(function(p) {
+        var sc = p.score >= 80 ? tc('green') : p.score >= 50 ? tc('yellow') : tc('red');
+        html += '<tr><td><code>' + p.url + '</code></td>';
+        html += '<td>' + schemaCheck(p.lb) + '</td>';
+        html += '<td>' + schemaCheck(p.org) + '</td>';
+        html += '<td>' + schemaCheck(p.geo) + '</td>';
+        html += '<td>' + schemaCheck(p.hours) + '</td>';
+        html += '<td>' + schemaCheck(p.rating) + '</td>';
+        html += '<td style="color:' + sc + ';font-weight:600;">' + p.score + '%</td>';
+        html += '</tr>';
+    });
+    html += '</tbody></table>';
+    html += '<div class="gcc-stub-badge">Mock data — connect schema scanner for real audit</div>';
+    html += '</div></div>';
+
+    /* ---- Geo-Specific AIVS from heatmap (REAL if available) ---- */
+    if (biData && biData.heatmap && biData.heatmap.cells.length > 0) {
+        html += '<div class="card" style="margin-top:1rem;">';
+        html += '<div class="card-header"><h3>AIVS by Scenario × Provider (Filtered for Geo Intent)</h3></div>';
+        html += '<div class="gcc-stub-content">';
+        // Try to find geo/local related scenarios from heatmap
+        var geoCells = biData.heatmap.cells.filter(function(c) {
+            var s = c.scenario.toLowerCase();
+            return s.indexOf('local') >= 0 || s.indexOf('geo') >= 0 || s.indexOf('region') >= 0 ||
+                   s.indexOf('address') >= 0 || s.indexOf('city') >= 0 || s.indexOf('office') >= 0 ||
+                   s.indexOf('branch') >= 0 || s.indexOf('map') >= 0;
+        });
+        if (geoCells.length > 0) {
+            html += '<p class="gcc-stub-desc" style="margin-bottom:0.5rem;">Heatmap cells matching geo/local scenarios from your BI data.</p>';
+            html += '<table class="serp-table"><thead><tr><th>Scenario</th><th>Provider</th><th>AIVS</th><th>Mentions</th><th>Zone</th></tr></thead><tbody>';
+            geoCells.forEach(function(c) {
+                var zoneColor = c.zone === 'green' ? tc('green') : c.zone === 'yellow' ? tc('yellow') : tc('red');
+                html += '<tr><td>' + escapeHtml(c.scenario) + '</td>';
+                html += '<td><span class="gcc-provider-badge" style="--badge-color:' + (PROVIDER_COLORS[c.vendor] || '#888') + ';">' + c.vendor + '</span></td>';
+                html += '<td style="font-weight:600;">' + c.aivs.toFixed(1) + '</td>';
+                html += '<td>' + c.mention_count + '/' + c.total_count + '</td>';
+                html += '<td><span style="color:' + zoneColor + ';">&#9679; ' + c.zone + '</span></td>';
+                html += '</tr>';
+            });
+            html += '</tbody></table>';
+        } else {
+            html += '<p class="gcc-stub-desc">No geo/local scenario patterns found in your heatmap data. Configure scenarios with geo-intent keywords (e.g. containing "address", "local", "office", "branch") to populate this section.</p>';
+        }
+        html += '</div></div>';
+    }
+
+    panel.innerHTML = html;
+
+    renderReviewVelocity();
+}
+
+function renderReviewVelocity() {
+    var canvas = document.getElementById('reviewVelocityCanvas');
+    if (!canvas) return;
+    if (reviewChart) reviewChart.destroy();
+
+    var months = ['Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb'];
+    var reviewsGoogle = [8, 12, 10, 15, 18, 22];
+    var reviewsYandex = [4, 6, 5, 7, 10, 13];
+    var sentiment = [3.8, 4.0, 3.5, 4.2, 4.5, 4.3];
+
+    reviewChart = new Chart(canvas, {
+        type: 'bar',
+        data: {
+            labels: months,
+            datasets: [
+                {
+                    label: 'Google Reviews',
+                    data: reviewsGoogle,
+                    backgroundColor: '#60a5fa40',
+                    borderColor: '#60a5fa',
+                    borderWidth: 1,
+                    yAxisID: 'y',
+                },
+                {
+                    label: 'Yandex Reviews',
+                    data: reviewsYandex,
+                    backgroundColor: '#fb923c40',
+                    borderColor: '#fb923c',
+                    borderWidth: 1,
+                    yAxisID: 'y',
+                },
+                {
+                    label: 'Avg Sentiment (1-5)',
+                    data: sentiment,
+                    type: 'line',
+                    borderColor: '#34d399',
+                    backgroundColor: '#34d39920',
+                    tension: 0.3,
+                    pointRadius: 4,
+                    pointHoverRadius: 6,
+                    borderWidth: 2,
+                    yAxisID: 'y1',
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: '#a0aec0', font: { size: 10 } } } },
+            scales: {
+                x: { stacked: true, ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+                y: {
+                    stacked: true,
+                    position: 'left',
+                    ticks: { color: '#64748b', font: { size: 10 } },
+                    grid: { color: 'rgba(255,255,255,0.04)' },
+                    title: { display: true, text: 'Reviews', color: '#64748b', font: { size: 10 } },
+                },
+                y1: {
+                    position: 'right',
+                    min: 1, max: 5,
+                    ticks: { color: '#64748b', font: { size: 10 } },
+                    grid: { drawOnChartArea: false },
+                    title: { display: true, text: 'Sentiment', color: '#64748b', font: { size: 10 } },
+                },
+            },
+        },
+    });
+}
+
+/* ================================================================
+   SCREEN 5: Yandex Neuro Zone (STUB)
+   ================================================================ */
+function renderYandex() {
+    var panel = document.getElementById('panel-yandex');
+    var html = '';
+
+    html += '<div class="gcc-stub-header">';
+    html += '<h2>Yandex Neuro Zone</h2>';
+    html += '<p class="gcc-stub-desc">Runet-specific behavioral factors, YandexGPT visibility, and cultural code compliance for the Russian market.</p>';
+    html += '</div>';
+
+    /* ---- YandexGPT AIVS (REAL DATA if available) ---- */
+    var yandexAIVS = null;
+    var yandexMentionRate = null;
+    var yandexSOV = null;
+    if (dashData && dashData.mention_rate_by_provider && dashData.mention_rate_by_provider.yandexgpt !== undefined) {
+        yandexMentionRate = dashData.mention_rate_by_provider.yandexgpt;
+    }
+    if (dashData && dashData.sov_by_provider && dashData.sov_by_provider.yandexgpt !== undefined) {
+        yandexSOV = dashData.sov_by_provider.yandexgpt;
+    }
+    if (biData && biData.heatmap && biData.heatmap.cells.length > 0) {
+        var yaCells = biData.heatmap.cells.filter(function(c) { return c.vendor === 'yandexgpt'; });
+        if (yaCells.length > 0) {
+            yandexAIVS = yaCells.reduce(function(a,c){return a+c.aivs;},0) / yaCells.length;
+        }
+    }
+
+    html += '<div class="gcc-kpi-cards" style="margin-bottom:1rem;">';
+    html += '<div class="metric-card"><div class="metric-card__header">YandexGPT AIVS</div>';
+    html += '<div class="metric-card__value" style="color:' + tc('orange') + ';">' + (yandexAIVS !== null ? yandexAIVS.toFixed(1) : '—') + '</div>';
+    html += '<div class="metric-card__footer">' + (yandexAIVS !== null ? 'From BI heatmap data' : 'No YandexGPT data') + '</div></div>';
+    html += '<div class="metric-card"><div class="metric-card__header">YandexGPT Mention Rate</div>';
+    html += '<div class="metric-card__value" style="color:' + tc('orange') + ';">' + (yandexMentionRate !== null ? (yandexMentionRate * 100).toFixed(1) + '%' : '—') + '</div>';
+    html += '<div class="metric-card__footer">' + (yandexMentionRate !== null ? 'Brand mentions' : 'No data') + '</div></div>';
+    html += '<div class="metric-card"><div class="metric-card__header">YandexGPT SOV</div>';
+    html += '<div class="metric-card__value" style="color:' + tc('orange') + ';">' + (yandexSOV !== null ? (yandexSOV * 100).toFixed(1) + '%' : '—') + '</div>';
+    html += '<div class="metric-card__footer">' + (yandexSOV !== null ? 'Share of Voice' : 'No data') + '</div></div>';
+    html += '<div class="metric-card"><div class="metric-card__header">Yandex Region</div>';
+    html += '<div class="metric-card__value">' + (projectData && projectData.region_yandex ? projectData.region_yandex : '213') + '</div>';
+    html += '<div class="metric-card__footer">Region code</div></div>';
+    html += '</div>';
+
+    html += '<div class="gcc-stub-grid gcc-stub-grid--2col">';
+
+    /* ---- Pogo-Sticking Bubble Chart ---- */
+    html += '<div class="card gcc-stub-card">';
+    html += '<div class="card-header"><h3>' + tip('PogoStick', 'Pogo-Sticking Risk Quadrant') + '</h3></div>';
+    html += '<div class="gcc-stub-content">';
+    html += '<p class="gcc-stub-desc" style="margin-bottom:0.5rem;">Pages in the <span style="color:' + tc('red') + ';">red zone</span> (top-left) have low dwell time and high return-to-SERP rate — critical for Yandex behavioral ranking.</p>';
+    html += '<div id="pogoChartContainer" style="height:300px;"></div>';
+    html += '<div class="gcc-stub-badge">Mock data — connect Yandex Metrika for real behavioral data</div>';
+    html += '</div></div>';
+
+    /* ---- Cultural Codes Gauges ---- */
+    html += '<div class="card gcc-stub-card">';
+    html += '<div class="card-header"><h3>' + tip('CulturalCodes', 'Cultural Codes Dashboard') + '</h3></div>';
+    html += '<div class="gcc-stub-content">';
+    html += '<p class="gcc-stub-desc" style="margin-bottom:0.5rem;">Yandex-specific ranking factors for the Russian market that are often overlooked in global SEO.</p>';
+    html += '<div class="gcc-gauges-row">';
+    html += '<div class="gcc-gauge-item"><div id="gaugeUniqueness" style="width:140px;height:140px;"></div><span>Text Uniqueness</span></div>';
+    html += '<div class="gcc-gauge-item"><div id="gaugeH1" style="width:140px;height:140px;"></div><span>H1 Compliance</span></div>';
+    html += '<div class="gcc-gauge-item"><div id="gaugeRegion" style="width:140px;height:140px;"></div><span>Region Binding</span></div>';
+    html += '</div>';
+    html += '<div class="gcc-stub-badge">Mock data — connect your site for real technical audit</div>';
+    html += '</div></div>';
+
+    html += '</div>'; // grid
+
+    /* ---- YandexGPT Scenario Breakdown (REAL DATA if available) ---- */
+    if (biData && biData.heatmap && biData.heatmap.cells.length > 0) {
+        var yaCells = biData.heatmap.cells.filter(function(c) { return c.vendor === 'yandexgpt'; });
+        if (yaCells.length > 0) {
+            html += '<div class="card" style="margin-top:1rem;">';
+            html += '<div class="card-header"><h3>YandexGPT Performance by Scenario (Real Data)</h3></div>';
+            html += '<div class="gcc-stub-content">';
+            html += '<table class="serp-table"><thead><tr><th>Scenario</th><th>AIVS</th><th>Mentions</th><th>Total Checks</th><th>Zone</th></tr></thead><tbody>';
+            yaCells.sort(function(a,b){return b.aivs - a.aivs;});
+            yaCells.forEach(function(c) {
+                var zoneColor = c.zone === 'green' ? tc('green') : c.zone === 'yellow' ? tc('yellow') : tc('red');
+                html += '<tr><td>' + escapeHtml(c.scenario) + '</td>';
+                html += '<td style="font-weight:600;color:' + zoneColor + ';">' + c.aivs.toFixed(1) + '</td>';
+                html += '<td>' + c.mention_count + '</td>';
+                html += '<td>' + c.total_count + '</td>';
+                html += '<td><span style="color:' + zoneColor + ';">&#9679; ' + c.zone + '</span></td>';
+                html += '</tr>';
+            });
+            html += '</tbody></table>';
+            html += '</div></div>';
+        }
+    }
+
+    /* ---- Behavioral Benchmarks ---- */
+    html += '<div class="card" style="margin-top:1rem;">';
+    html += '<div class="card-header"><h3>' + tip('Behavioral', 'Yandex Behavioral Benchmarks') + '</h3></div>';
+    html += '<div class="gcc-stub-content">';
+    html += '<p class="gcc-stub-desc" style="margin-bottom:0.75rem;">Key behavioral signals that influence Yandex ranking. Benchmarked against industry averages.</p>';
+    html += '<table class="serp-table"><thead><tr><th>Metric</th><th>Your Site</th><th>Industry Avg</th><th>Status</th><th>Impact</th></tr></thead><tbody>';
+    var benchmarks = [
+        { metric: 'Avg Dwell Time', yours: '2m 15s', industry: '1m 45s', good: true, impact: 'High' },
+        { metric: 'Bounce Rate', yours: '38%', industry: '42%', good: true, impact: 'High' },
+        { metric: 'Pages per Session', yours: '3.2', industry: '2.8', good: true, impact: 'Medium' },
+        { metric: 'Return Visit Rate', yours: '18%', industry: '25%', good: false, impact: 'Medium' },
+        { metric: 'Direct Navigation %', yours: '12%', industry: '15%', good: false, impact: 'High' },
+        { metric: 'Search Refinement Rate', yours: '22%', industry: '18%', good: false, impact: 'Medium' },
+        { metric: 'Mobile Session Length', yours: '1m 30s', industry: '1m 10s', good: true, impact: 'High' },
+    ];
+    benchmarks.forEach(function(b) {
+        var statusIcon = b.good ? '<span style="color:' + tc('green') + ';">&#10003; Good</span>' : '<span style="color:' + tc('red') + ';">&#10007; Below</span>';
+        var impactColor = b.impact === 'High' ? tc('red') : b.impact === 'Medium' ? tc('yellow') : tc('muted');
+        html += '<tr><td><strong>' + b.metric + '</strong></td>';
+        html += '<td style="font-weight:600;">' + b.yours + '</td>';
+        html += '<td style="color:' + tc('muted') + ';">' + b.industry + '</td>';
+        html += '<td>' + statusIcon + '</td>';
+        html += '<td><span style="color:' + impactColor + ';">' + b.impact + '</span></td>';
+        html += '</tr>';
+    });
+    html += '</tbody></table>';
+    html += '<div class="gcc-stub-badge">Mock data — connect Yandex Metrika for real benchmarks</div>';
+    html += '</div></div>';
+
+    /* ---- YandexGPT-Specific Recommendations ---- */
+    html += '<div class="card" style="margin-top:1rem;">';
+    html += '<div class="card-header"><h3>YandexGPT Optimization Checklist</h3></div>';
+    html += '<div class="gcc-stub-content">';
+    html += '<div class="gcc-yandex-checklist">';
+    var yaChecklist = [
+        { text: 'Ensure Yandex region binding matches your target city/region', icon: '🌍', priority: 'high' },
+        { text: 'Add YandexAdditionalBot to robots.txt Allow rules', icon: '🤖', priority: 'high' },
+        { text: 'Use Turbo Pages or AMP equivalents for mobile traffic', icon: '⚡', priority: 'medium' },
+        { text: 'Submit site to Yandex Webmaster and verify ownership', icon: '✅', priority: 'high' },
+        { text: 'Configure ICS (Yandex Quality Index) monitoring', icon: '📈', priority: 'medium' },
+        { text: 'Use Original Texts feature for new content protection', icon: '🛡️', priority: 'medium' },
+        { text: 'Implement Yandex.Metrika goals for behavioral tracking', icon: '🎯', priority: 'high' },
+        { text: 'Check Cyrillic URL compatibility and proper encoding', icon: '🔤', priority: 'low' },
+    ];
+    yaChecklist.forEach(function(item) {
+        var pColor = item.priority === 'high' ? tc('red') : item.priority === 'medium' ? tc('yellow') : tc('muted');
+        html += '<div class="gcc-ya-check-item">';
+        html += '<span class="gcc-ya-check-icon">' + item.icon + '</span>';
+        html += '<span class="gcc-ya-check-text">' + item.text + '</span>';
+        html += '<span class="gcc-ya-check-priority" style="color:' + pColor + ';">' + item.priority + '</span>';
+        html += '</div>';
+    });
+    html += '</div></div></div>';
+
+    panel.innerHTML = html;
+
+    renderPogoChart();
+    renderCulturalGauges();
+}
+
+function renderPogoChart() {
+    var c = document.getElementById('pogoChartContainer');
+    if (!c) return;
+    if (pogoChart) pogoChart.dispose();
+
+    pogoChart = echarts.init(c, 'dark');
+    // Mock: [dwell_time_sec, pogo_rate_%, search_volume, page_name]
+    var mockData = [
+        [120, 8, 30, '/pricing'],
+        [45, 35, 25, '/contacts'],
+        [180, 5, 20, '/blog/guide'],
+        [30, 55, 35, '/catalog'],
+        [90, 15, 18, '/about'],
+        [20, 65, 40, '/landing-old'],
+        [150, 10, 22, '/faq'],
+    ];
+
+    pogoChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+            formatter: function(p) {
+                return p.data[3] + '<br/>Dwell time: ' + p.data[0] + 's<br/>Pogo rate: ' + p.data[1] + '%<br/>Volume: ' + p.data[2];
+            }
+        },
+        grid: { left: '12%', right: '5%', top: '10%', bottom: '15%' },
+        xAxis: {
+            name: 'Dwell time (sec)',
+            nameLocation: 'middle',
+            nameGap: 30,
+            nameTextStyle: { color: '#a0aec0', fontSize: 11 },
+            axisLabel: { color: '#64748b', fontSize: 10 },
+            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+        },
+        yAxis: {
+            name: 'Pogo-stick rate %',
+            nameLocation: 'middle',
+            nameGap: 40,
+            nameTextStyle: { color: '#a0aec0', fontSize: 11 },
+            max: 80,
+            axisLabel: { color: '#64748b', fontSize: 10 },
+            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
+        },
+        // Danger zone: top-left (low dwell, high pogo)
+        markArea: {
+            silent: true,
+            data: [[
+                { xAxis: 0, yAxis: 30, itemStyle: { color: 'rgba(248,113,113,0.08)' } },
+                { xAxis: 60, yAxis: 80 },
+            ]],
+        },
+        series: [{
+            type: 'scatter',
+            symbolSize: function(d) { return d[2]; },
+            data: mockData,
+            itemStyle: {
+                color: function(p) {
+                    // Red if in danger zone (low dwell, high pogo)
+                    if (p.data[0] < 60 && p.data[1] > 30) return tc('red');
+                    if (p.data[1] > 20) return tc('yellow');
+                    return tc('green');
+                },
+            },
+            label: {
+                show: true,
+                formatter: function(p) { return p.data[3]; },
+                position: 'top',
+                color: '#a0aec0',
+                fontSize: 9,
+            },
+        }],
+    });
+}
+
+function renderCulturalGauges() {
+    gaugeCharts.forEach(function(c) { c.dispose(); });
+    gaugeCharts = [];
+
+    var gaugeConfigs = [
+        { id: 'gaugeUniqueness', value: 87, color: '#34d399', threshold: 80 },
+        { id: 'gaugeH1', value: 95, color: '#60a5fa', threshold: 100 },
+        { id: 'gaugeRegion', value: 70, color: '#fbbf24', threshold: 100 },
+    ];
+
+    gaugeConfigs.forEach(function(cfg) {
+        var c = document.getElementById(cfg.id);
+        if (!c) return;
+        var chart = echarts.init(c, 'dark');
+        gaugeCharts.push(chart);
+
+        var valColor = cfg.value >= cfg.threshold ? tc('green') : cfg.value >= cfg.threshold * 0.7 ? tc('yellow') : tc('red');
+
+        chart.setOption({
+            backgroundColor: 'transparent',
+            series: [{
+                type: 'gauge',
+                startAngle: 220, endAngle: -40,
+                radius: '90%',
+                center: ['50%', '55%'],
+                min: 0, max: 100,
+                axisLine: {
+                    lineStyle: {
+                        width: 10,
+                        color: [[cfg.value / 100, valColor], [1, 'rgba(255,255,255,0.08)']]
+                    }
+                },
+                pointer: { show: false },
+                axisTick: { show: false },
+                splitLine: { show: false },
+                axisLabel: { show: false },
+                detail: {
+                    fontSize: 20, fontWeight: 700, color: valColor,
+                    offsetCenter: [0, '10%'],
+                    formatter: '{value}%'
+                },
+                data: [{ value: cfg.value }]
+            }]
+        });
+    });
+}
+
+/* ================================================================
+   SCREEN 6: Action Matrix
+   ================================================================ */
+/* ---- Matrix sections data model ---- */
+var MATRIX_SECTIONS = [
+    {
+        id: 'technical', title: 'Technical Foundation', icon: '🔧',
+        items: [
+            { id: 'tech-0', text: 'Configure robots.txt: allow GPTBot, Google-Extended, ClaudeBot, PerplexityBot, YandexAdditionalBot', locked: false },
+            { id: 'tech-1', text: 'Add JSON-LD Organization schema to homepage with @id anchors', locked: false },
+            { id: 'tech-2', text: 'Implement FAQPage and HowTo schema on top 10 landing pages', locked: false },
+            { id: 'tech-3', text: 'Achieve sub-second Core Web Vitals (TTFB, CLS, LCP)', locked: false, auto: true },
+            { id: 'tech-4', text: 'Set up sitemap with LLM-priority pages and fresh lastmod timestamps', locked: true, dependency: 'Requires: robots.txt configured', unlockWhen: ['tech-0'] },
+            { id: 'tech-5', text: 'Migrate subdomains to subdirectories for trust consolidation', locked: false },
+        ]
+    },
+    {
+        id: 'content', title: 'Content Optimization', icon: '✍️',
+        items: [
+            { id: 'cont-0', text: 'Rewrite top 10 pages with answer-first structure (direct answer under H2/H3)', locked: false },
+            { id: 'cont-1', text: 'Replace pronouns with entity names in key paragraphs', locked: false },
+            { id: 'cont-2', text: 'Add authoritative citations and data points to all claims', locked: false },
+            { id: 'cont-3', text: 'Update outdated content (>90 days) with fresh benchmarks and timestamps', locked: false },
+            { id: 'cont-4', text: 'Create dedicated comparison pages vs top 3 competitors', locked: true, dependency: 'Requires: Content rewrite complete', unlockWhen: ['cont-0', 'cont-1'] },
+        ]
+    },
+    {
+        id: 'authority', title: 'Authority & Trust (E-E-A-T)', icon: '🏆',
+        items: [
+            { id: 'auth-0', text: 'Create detailed author pages with academic credentials and LinkedIn links', locked: false },
+            { id: 'auth-1', text: 'Build citation backlinks from trusted domains in your niche', locked: false },
+            { id: 'auth-2', text: 'Submit original texts to Yandex Webmaster for authorship protection', locked: false },
+            { id: 'auth-3', text: 'Add sameAs links to Wikipedia, Wikidata, and official social profiles', locked: false },
+        ]
+    },
+    {
+        id: 'spatial', title: 'Spatial & Local GEO', icon: '📍',
+        items: [
+            { id: 'spa-0', text: 'Audit NAP consistency across all directories (Google, Yandex, 2GIS, Apple)', locked: false },
+            { id: 'spa-1', text: 'Replace 8-800 numbers with local city codes on branch pages', locked: false },
+            { id: 'spa-2', text: 'Add unique local content to each branch page (no boilerplate)', locked: false },
+            { id: 'spa-3', text: 'Respond to recent negative reviews across all platforms', locked: false },
+            { id: 'spa-4', text: 'Link LocalBusiness entities to Organization via parentOrganization', locked: true, dependency: 'Requires: JSON-LD Organization configured', unlockWhen: ['tech-1'] },
+        ]
+    },
+    {
+        id: 'monitoring', title: 'Monitoring & Iteration', icon: '📊',
+        items: [
+            { id: 'mon-0', text: 'Set up weekly AIVS and SoM tracking alerts', locked: false },
+            { id: 'mon-1', text: 'Configure competitor mention monitoring across all LLM providers', locked: false },
+            { id: 'mon-2', text: 'Schedule monthly GEO audit review and benchmark comparison', locked: false },
+            { id: 'mon-3', text: 'Track hallucination rate trends and set up auto-alerts for spikes', locked: false },
+        ]
+    },
+];
+
+var matrixCheckedState = {}; // { 'tech-0': true, 'cont-1': false, ... }
+var MATRIX_STORAGE_KEY = 'gcc_matrix_' + PROJECT_ID;
+
+function restoreMatrixState() {
+    try {
+        var saved = localStorage.getItem(MATRIX_STORAGE_KEY);
+        if (saved) matrixCheckedState = JSON.parse(saved);
+    } catch(e) { matrixCheckedState = {}; }
+}
+
+function saveMatrixState() {
+    try { localStorage.setItem(MATRIX_STORAGE_KEY, JSON.stringify(matrixCheckedState)); } catch(e) {}
+}
+
+function isItemUnlocked(item) {
+    if (!item.locked) return true;
+    if (!item.unlockWhen) return false;
+    return item.unlockWhen.every(function(depId) { return !!matrixCheckedState[depId]; });
+}
+
+function renderMatrix() {
+    var panel = document.getElementById('panel-matrix');
+
+    var html = '<div class="gcc-matrix">';
+    html += '<div class="gcc-matrix-header">';
+    html += '<h2>GEO Action Matrix</h2>';
+    html += '<div class="gcc-matrix-progress">';
+    html += '<div class="gcc-matrix-progress-bar"><div class="gcc-matrix-progress-fill" id="matrixProgressFill"></div></div>';
+    html += '<span id="matrixProgress">0 / 0</span> tasks';
+    html += '</div>';
+    html += '</div>';
+
+    /* ---- AI Insights from BI (real data) ---- */
+    if (biData && biData.geo_action_plan && biData.geo_action_plan.insights.length > 0) {
+        html += '<div class="gcc-matrix-insights">';
+        html += '<div class="gcc-matrix-insights__header">';
+        html += '<span>🤖 AI-Generated Recommendations</span>';
+        html += '<span class="gcc-matrix-insights__count">' + biData.geo_action_plan.insights.length + ' insights</span>';
+        html += '</div>';
+        biData.geo_action_plan.insights.forEach(function(ins) {
+            var sevColor = ins.severity === 'critical' ? tc('red') : ins.severity === 'warning' ? tc('yellow') : '#60a5fa';
+            var sevIcon = ins.severity === 'critical' ? '🔴' : ins.severity === 'warning' ? '🟡' : '🔵';
+            html += '<div class="gcc-matrix-insight-item">';
+            html += '<div class="gcc-matrix-insight-item__header">';
+            html += '<span style="color:' + sevColor + ';">' + sevIcon + ' ' + escapeHtml(ins.title_ru) + '</span>';
+            html += '<span class="gcc-matrix-insight-item__severity" style="color:' + sevColor + ';">' + ins.severity + '</span>';
+            html += '</div>';
+            html += '<div class="gcc-matrix-insight-item__desc">' + escapeHtml(ins.description_ru) + '</div>';
+            html += '<div class="gcc-matrix-insight-item__action">💡 ' + escapeHtml(ins.recommendation_ru) + '</div>';
+            html += '</div>';
+        });
+        html += '</div>';
+    }
+
+    MATRIX_SECTIONS.forEach(function(sec) {
+        var sectionDone = 0;
+        var sectionTotal = sec.items.length;
+        sec.items.forEach(function(item) { if (matrixCheckedState[item.id]) sectionDone++; });
+        var pct = sectionTotal > 0 ? Math.round(sectionDone / sectionTotal * 100) : 0;
+
+        html += '<div class="gcc-accordion' + (sectionDone === sectionTotal && sectionTotal > 0 ? ' gcc-accordion--complete' : '') + '" data-section="' + sec.id + '">';
+        html += '<button class="gcc-accordion__trigger" onclick="toggleAccordion(\'' + sec.id + '\')">';
+        html += '<span>' + sec.icon + ' ' + sec.title + '</span>';
+        html += '<span class="gcc-accordion__meta">';
+        html += '<span class="gcc-accordion__pct">' + pct + '%</span>';
+        html += '<span class="gcc-accordion__count">' + sectionDone + '/' + sectionTotal + '</span>';
+        html += '</span>';
+        html += '<svg class="gcc-accordion__arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
+        html += '</button>';
+        html += '<div class="gcc-accordion__body" id="accordion-' + sec.id + '">';
+
+        sec.items.forEach(function(item) {
+            var isChecked = !!matrixCheckedState[item.id];
+            var unlocked = isItemUnlocked(item);
+            var isLocked = item.locked && !unlocked;
+            var cls = 'gcc-checklist-item';
+            if (isChecked) cls += ' gcc-checklist-item--done';
+            if (isLocked) cls += ' gcc-checklist-item--locked';
+            if (item.auto) cls += ' gcc-checklist-item--auto';
+
+            html += '<label class="' + cls + '">';
+            html += '<input type="checkbox" data-item-id="' + item.id + '"' + (isChecked ? ' checked' : '') + (isLocked ? ' disabled' : '') + ' onchange="onCheckItem(\'' + item.id + '\', this.checked)">';
+            html += '<span class="gcc-checklist-text">' + escapeHtml(item.text) + '</span>';
+            if (isLocked) {
+                html += '<span class="gcc-checklist-lock" title="' + escapeHtml(item.dependency) + '">';
+                html += '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
+                html += ' ' + escapeHtml(item.dependency);
+                html += '</span>';
+            } else if (item.locked && unlocked) {
+                html += '<span class="gcc-checklist-unlocked" title="Dependency satisfied — unlocked!">🔓 Unlocked</span>';
+            }
+            if (item.auto) {
+                html += '<span class="gcc-checklist-auto" title="Auto-validated via API">Auto</span>';
+            }
+            html += '</label>';
+        });
+
+        html += '</div></div>';
+    });
+
+    html += '</div>';
+    panel.innerHTML = html;
+
+    updateMatrixProgress();
+}
+
+function toggleAccordion(sectionId) {
+    var accordion = document.querySelector('.gcc-accordion[data-section="' + sectionId + '"]');
+    if (accordion) accordion.classList.toggle('gcc-accordion--open');
+}
+
+function onCheckItem(itemId, checked) {
+    matrixCheckedState[itemId] = checked;
+    saveMatrixState();
+    // Re-render to update dependency locks and progress
+    renderMatrix();
+}
+
+function updateMatrixProgress() {
+    var total = 0, done = 0;
+    MATRIX_SECTIONS.forEach(function(sec) {
+        sec.items.forEach(function(item) {
+            total++;
+            if (matrixCheckedState[item.id]) done++;
+        });
+    });
+    var el = document.getElementById('matrixProgress');
+    if (el) el.textContent = done + ' / ' + total;
+    var fill = document.getElementById('matrixProgressFill');
+    if (fill) fill.style.width = (total > 0 ? Math.round(done / total * 100) : 0) + '%';
+}
+
+/* ---- Auto-refresh timer ---- */
+var autoRefreshInterval = null;
+var autoRefreshSeconds = 0;
+var AUTO_REFRESH_PERIOD = 300; // 5 minutes
+
+function startAutoRefresh() {
+    stopAutoRefresh();
+    autoRefreshSeconds = AUTO_REFRESH_PERIOD;
+    updateRefreshTimerDisplay();
+    autoRefreshInterval = setInterval(function() {
+        autoRefreshSeconds--;
+        if (autoRefreshSeconds <= 0) {
+            refreshData();
+            autoRefreshSeconds = AUTO_REFRESH_PERIOD;
+        }
+        updateRefreshTimerDisplay();
+    }, 1000);
+    var btn = document.getElementById('autoRefreshToggle');
+    if (btn) { btn.classList.add('gcc-refresh-btn--active'); btn.title = 'Auto-refresh ON (5 min)'; }
+}
+
+function stopAutoRefresh() {
+    if (autoRefreshInterval) { clearInterval(autoRefreshInterval); autoRefreshInterval = null; }
+    autoRefreshSeconds = 0;
+    updateRefreshTimerDisplay();
+    var btn = document.getElementById('autoRefreshToggle');
+    if (btn) { btn.classList.remove('gcc-refresh-btn--active'); btn.title = 'Auto-refresh OFF'; }
+}
+
+function toggleAutoRefresh() {
+    if (autoRefreshInterval) { stopAutoRefresh(); } else { startAutoRefresh(); }
+}
+
+function updateRefreshTimerDisplay() {
+    var el = document.getElementById('refreshCountdown');
+    if (!el) return;
+    if (autoRefreshInterval && autoRefreshSeconds > 0) {
+        var m = Math.floor(autoRefreshSeconds / 60);
+        var s = autoRefreshSeconds % 60;
+        el.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+        el.style.display = '';
+    } else {
+        el.style.display = 'none';
+    }
+}
+
+/* ---- Chart fullscreen expand ---- */
+function expandChart(containerId, title) {
+    var src = document.getElementById(containerId);
+    if (!src) return;
+    var modal = document.createElement('div');
+    modal.className = 'gcc-modal-overlay gcc-fullscreen-chart';
+    modal.onclick = function(e) { if (e.target === modal) { modal.remove(); } };
+    modal.innerHTML = '<div class="gcc-modal gcc-modal--fullscreen">'
+        + '<div class="gcc-modal__header"><h3>' + escapeHtml(title || 'Chart') + '</h3><button onclick="this.closest(\'.gcc-modal-overlay\').remove()" class="gcc-modal__close">&times;</button></div>'
+        + '<div class="gcc-modal__body gcc-fullscreen-chart__body"><div id="fullscreenChartContainer" style="width:100%;height:100%;"></div></div>'
+        + '</div>';
+    document.body.appendChild(modal);
+
+    // Clone ECharts instance into fullscreen container
+    var target = document.getElementById('fullscreenChartContainer');
+    var existingChart = echarts.getInstanceByDom(src);
+    if (existingChart) {
+        var fsChart = echarts.init(target, 'dark');
+        fsChart.setOption(existingChart.getOption());
+        // Clean up on close
+        var observer = new MutationObserver(function() {
+            if (!document.body.contains(modal)) { fsChart.dispose(); observer.disconnect(); }
+        });
+        observer.observe(document.body, { childList: true });
+    } else {
+        // Canvas-based (Chart.js) — show a message
+        target.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-secondary);">Fullscreen available for ECharts visualizations</div>';
+    }
+}
+
+/* ---- Hash change listener ---- */
+window.addEventListener('hashchange', function() {
+    var screen = getScreenFromHash();
+    if (screen !== currentScreen) {
+        switchScreen(screen);
+    }
+});
+
+/* ---- Keyboard navigation: ←/→ arrows switch tabs ---- */
+document.addEventListener('keydown', function(e) {
+    // Only if no modal open and not typing in input
+    if (document.querySelector('.gcc-modal-overlay')) return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+
+    var screenIds = ['kpi', 'tech', 'content', 'spatial', 'yandex', 'matrix'];
+    var idx = screenIds.indexOf(currentScreen);
+    if (e.key === 'ArrowRight' && idx < screenIds.length - 1) {
+        switchScreen(screenIds[idx + 1]);
+        e.preventDefault();
+    } else if (e.key === 'ArrowLeft' && idx > 0) {
+        switchScreen(screenIds[idx - 1]);
+        e.preventDefault();
+    } else if (e.key === 'Escape') {
+        var modal = document.querySelector('.gcc-modal-overlay');
+        if (modal) modal.remove();
+        var alertPanel = document.getElementById('alertPanel');
+        if (alertPanel && alertPanel.style.display !== 'none') toggleAlertPanel();
+    }
+});
+
+/* ---- Last-updated timestamp ---- */
+var lastDataUpdate = null;
+
+function renderLastUpdated() {
+    var el = document.getElementById('lastUpdatedStamp');
+    if (!el) return;
+    if (lastDataUpdate) {
+        var now = new Date();
+        var diff = Math.round((now - lastDataUpdate) / 1000);
+        var text = diff < 60 ? 'just now' : diff < 3600 ? Math.round(diff / 60) + 'm ago' : Math.round(diff / 3600) + 'h ago';
+        el.textContent = 'Updated ' + text;
+        el.style.display = '';
+    } else {
+        el.style.display = 'none';
+    }
+}
+
+/* ---- Cleanup on page leave ---- */
+window.addEventListener('beforeunload', function() {
+    if (readinessGauge) readinessGauge.dispose();
+    if (sovRadarChart) sovRadarChart.dispose();
+    if (sentimentBarChart) sentimentBarChart.dispose();
+    if (jsonldGraphChart) jsonldGraphChart.dispose();
+    if (freshnessChart) freshnessChart.dispose();
+    if (pogoChart) pogoChart.dispose();
+    if (kpiHeatmapChart) kpiHeatmapChart.dispose();
+    if (intentChart) intentChart.dispose();
+    if (citationTrendChart) citationTrendChart.destroy();
+    if (reviewChart) reviewChart.destroy();
+    gaugeCharts.forEach(function(c) { c.dispose(); });
+});
+</script>
+{% endblock %}

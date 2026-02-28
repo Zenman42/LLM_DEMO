@@ -1,0 +1,124 @@
+x-app-env: &app-env
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_USER: ${POSTGRES_USER:-pt_user}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+  POSTGRES_DB: ${POSTGRES_DB:-position_tracker}
+  CLICKHOUSE_HOST: clickhouse
+  CLICKHOUSE_PORT: 8123
+  CLICKHOUSE_DB: ${CLICKHOUSE_DB:-position_tracker}
+  REDIS_URL: redis://redis:6379/0
+  JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-key-change-in-production}
+  FERNET_KEY: ${FERNET_KEY:-}
+  APP_ENV: ${APP_ENV:-development}
+  APP_DEBUG: ${APP_DEBUG:-true}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  LOG_JSON: ${LOG_JSON:-false}
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pt_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-position_tracker}
+    ports:
+      - "${PG_EXTERNAL_PORT:-5433}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pt_user} -d ${POSTGRES_DB:-position_tracker}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-position_tracker}
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+    ports:
+      - "${CH_EXTERNAL_PORT:-8123}:8123"
+      - "${CH_NATIVE_PORT:-9000}:9000"
+    volumes:
+      - ch_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${REDIS_EXTERNAL_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${WEB_WORKERS:-4}
+    expose:
+      - "8000"
+    volumes:
+      - static_files:/app/static
+    environment:
+      <<: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery-worker:
+    build: .
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app worker --loglevel=${LOG_LEVEL:-info} --concurrency=${CELERY_CONCURRENCY:-4}
+    environment:
+      <<: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery-beat:
+    build: .
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app beat --loglevel=${LOG_LEVEL:-info}
+    environment:
+      <<: *app-env
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - static_files:/app/static:ro
+    depends_on:
+      - web
+
+volumes:
+  pg_data:
+  ch_data:
+  redis_data:
+  static_files:

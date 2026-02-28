@@ -1,0 +1,2241 @@
+{% extends "base.html" %}
+
+{% block title %}New LLM Project — LLM Tracker{% endblock %}
+{% block page_title %}New LLM Project{% endblock %}
+
+{% block content %}
+<div class="wizard-container">
+    <!-- Progress Bar (4 steps) -->
+    <div class="wizard-progress">
+        <div class="wizard-progress-step active" data-step="1">
+            <div class="step-number">1</div>
+            <div class="step-label">Brand DNA</div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="wizard-progress-step" data-step="2">
+            <div class="step-number">2</div>
+            <div class="step-label">Competitors</div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="wizard-progress-step" data-step="3">
+            <div class="step-number">3</div>
+            <div class="step-label">Scenarios &amp; Prompts</div>
+        </div>
+        <div class="step-connector"></div>
+        <div class="wizard-progress-step" data-step="4">
+            <div class="step-number">4</div>
+            <div class="step-label">Finalize</div>
+        </div>
+    </div>
+
+    <!-- Split Layout -->
+    <div class="wizard-split">
+        <!-- LEFT: Form Panel -->
+        <div class="wizard-form-panel">
+
+            <!-- Step 1: Brand DNA -->
+            <div class="wizard-step active" data-step="1">
+                <h2>Brand DNA</h2>
+                <p class="step-description">Tell us about your brand — we'll use this to generate precise LLM audit prompts.</p>
+
+                <div class="form-group">
+                    <label for="wizDomain">Website domain <span class="optional">(optional)</span></label>
+                    <input type="text" id="wizDomain" class="form-input" placeholder="example.com" oninput="onWizChange()">
+                </div>
+
+                <div class="form-group">
+                    <label for="wizBrand">Brand name <span class="required">*</span></label>
+                    <input type="text" id="wizBrand" class="form-input" placeholder="Your brand name" oninput="onWizChange()">
+                    <div class="field-error" id="wizBrandError"></div>
+                </div>
+
+                <div class="form-group">
+                    <label>Brand aliases &amp; synonyms</label>
+                    <div class="chip-input-container" id="aliasChips">
+                        <input type="text" class="chip-text-input" id="aliasInput" placeholder="Add alias and press Enter">
+                    </div>
+                    <div class="field-hint">Abbreviations, transliterations, common misspellings</div>
+                </div>
+
+                <div class="form-group" id="brandDescGroup" style="display:none">
+                    <label for="wizBrandDesc">
+                        About the company
+                        <button type="button" class="btn btn-ghost btn-sm" id="researchBtn" onclick="researchBrand()" title="Auto-research brand">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                            Research
+                        </button>
+                    </label>
+                    <textarea id="wizBrandDesc" class="form-input" rows="12" style="min-height:200px; resize:vertical;" placeholder="Company description will be auto-generated..." oninput="onBrandDescChange()"></textarea>
+                    <div class="field-hint">Auto-generated description of the company's business. Edit if needed — this anchors all prompts to the right domain.</div>
+                    <div id="researchStatus" class="field-hint" style="display:none; color: var(--accent);"></div>
+                </div>
+
+                <!-- Market & Geo (moved from old Step 4) -->
+                <div class="form-group">
+                    <label>Market</label>
+                    <div class="market-toggle">
+                        <button type="button" class="market-btn active" data-market="ru" onclick="setMarket('ru')">&#x1f1f7;&#x1f1fa; Russian</button>
+                        <button type="button" class="market-btn" data-market="en" onclick="setMarket('en')">&#x1f1ec;&#x1f1e7; English</button>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="wizGeo">Geography <span class="optional">(optional)</span></label>
+                    <input type="text" id="wizGeo" class="form-input" placeholder="Russia, Moscow, etc." oninput="onWizChange()">
+                </div>
+
+                <!-- Sub-Brands (appears after brand description is generated) -->
+                <div class="form-group" id="subBrandsGroup" style="display:none">
+                    <label>
+                        Sub-Brands <span class="optional">(optional)</span>
+                        <span class="field-count" id="subBrandCount">0 / 15</span>
+                        <button type="button" class="btn btn-ghost btn-sm" id="suggestSubBrandsBtn" onclick="suggestSubBrands()" title="AI-suggest sub-brands">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                            Suggest
+                        </button>
+                    </label>
+                    <div id="subBrandCards" class="sub-brand-cards"></div>
+                    <div class="suggestions-container" id="subBrandSuggestions" style="display:none">
+                        <div class="suggestions-label">Suggestions (click to add):</div>
+                        <div class="suggestions-chips" id="subBrandSuggestionChips"></div>
+                    </div>
+                    <div class="sub-brand-add-row">
+                        <input type="text" class="form-input" id="subBrandNameInput" placeholder="Sub-brand name" maxlength="255">
+                        <input type="text" class="form-input" id="subBrandAliasesInput" placeholder="Aliases (comma-separated)" maxlength="500">
+                        <button type="button" class="btn btn-ghost btn-sm" onclick="addSubBrand()">Add</button>
+                    </div>
+                    <div class="field-hint">Product lines, child brands, franchise entities (e.g. residential complexes for a developer)</div>
+                </div>
+            </div>
+
+            <!-- Step 2: Competitive Radar -->
+            <div class="wizard-step" data-step="2">
+                <h2>Competitive Radar</h2>
+                <p class="step-description">Who are your main competitors? We'll compare how LLMs recommend you vs. them.</p>
+
+                <div class="form-group">
+                    <label>
+                        Competitors <span class="required">*</span> <span class="field-count" id="compCount">0 / 10</span>
+                        <button type="button" class="btn btn-ghost btn-sm" id="suggestCompBtn" onclick="suggestCompetitors()" title="AI-suggest competitors">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                            Suggest
+                        </button>
+                    </label>
+                    <div class="chip-input-container" id="compChips">
+                        <input type="text" class="chip-text-input" id="compInput" placeholder="Add competitor and press Enter">
+                    </div>
+                    <div class="field-error" id="compError"></div>
+                    <div class="suggestions-container" id="compSuggestions" style="display:none">
+                        <div class="suggestions-label">Suggestions (click to add):</div>
+                        <div class="suggestions-chips" id="compSuggestionChips"></div>
+                    </div>
+                    <div class="field-hint">3-5 direct competitors recommended</div>
+                </div>
+
+                <!-- Competitor Sub-Brands (accordion per competitor) -->
+                <div class="form-group" id="competitorSubBrandsGroup" style="display:none">
+                    <label>Competitor Sub-Brands <span class="optional">(optional)</span></label>
+                    <div id="competitorSubBrandsContainer"></div>
+                    <div class="field-hint">Add product lines or child brands for each competitor</div>
+                </div>
+            </div>
+
+            <!-- Step 3: Scenarios & Prompts (iterative workflow) -->
+            <div class="wizard-step" data-step="3">
+                <!-- Zone 1: Header + Input (always visible) -->
+                <h2>Customer Scenarios</h2>
+                <p class="step-description">Add a scenario, generate prompts, approve — then add the next one or finish.</p>
+
+                <div class="form-group">
+                    <label>
+                        Add Scenario <span class="field-count" id="catCount">0 / 20</span>
+                        <button type="button" class="btn btn-ghost btn-sm" id="suggestCatBtn" onclick="suggestCategories()" title="AI-suggest scenarios">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                            Suggest
+                        </button>
+                    </label>
+                    <div class="scenario-add-input-row">
+                        <input type="text" class="form-input" id="catInput" placeholder="e.g. 'choosing the best betting site' — press Enter to add">
+                    </div>
+                    <div class="field-error" id="catError"></div>
+                    <div class="suggestions-container" id="catSuggestions" style="display:none">
+                        <div class="suggestions-label">Suggestions (click to add):</div>
+                        <div class="suggestions-chips" id="catSuggestionChips"></div>
+                    </div>
+                </div>
+
+                <!-- Zone 2: Scenario List (clickable cards) -->
+                <div id="scenarioListCards" class="scenario-list-cards"></div>
+
+                <!-- Zone 3: Active Scenario Editor (visible when activeIdx >= 0) -->
+                <div id="activeScenarioEditor" style="display:none">
+                    <div class="active-scenario-header">
+                        <h3 id="currentScenarioName" class="scenario-config-title"></h3>
+                        <button type="button" class="btn btn-ghost btn-sm btn-danger-text" onclick="removeActiveScenario(wizState.scenarioWorkflow.activeIdx)" title="Delete scenario">&times; Delete</button>
+                    </div>
+
+                    <div class="form-group">
+                        <label>
+                            Scenario description
+                            <button type="button" class="btn btn-ghost btn-sm" id="genDescBtn" onclick="generateScenarioDescription()" title="AI-generate description">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                                Generate
+                            </button>
+                        </label>
+                        <textarea id="currentScenarioDesc" class="form-input" rows="3" style="resize:vertical;" placeholder="Describe the user situation in detail..." oninput="onScenarioDescChange()"></textarea>
+                        <div id="descGenStatus" class="field-hint" style="display:none; color: var(--accent);"></div>
+                    </div>
+
+                    <!-- Generate prompts button -->
+                    <div class="scenario-actions-bar">
+                        <button type="button" class="btn btn-accent" id="genPromptsBtn" onclick="generateScenarioPrompts()">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                            Generate Prompts
+                        </button>
+                        <button type="button" class="btn btn-ghost" onclick="skipScenario()">Skip</button>
+                    </div>
+
+                    <!-- Generation status -->
+                    <div class="prompt-generation-status" id="scenarioGenStatus" style="display:none">
+                        <div class="prompt-gen-spinner">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><circle cx="12" cy="12" r="10" opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></path></svg>
+                        </div>
+                        <span id="scenarioGenStatusText">Generating prompts...</span>
+                    </div>
+
+                    <!-- Inline prompt editor for this scenario -->
+                    <div id="scenarioPromptEditor" style="display:none">
+                        <!-- Filters & Stats -->
+                        <div class="prompt-editor-toolbar">
+                            <div class="prompt-filter-group">
+                                <label class="prompt-filter-label">Filter:</label>
+                                <select id="filterQueryClass" class="prompt-filter-select" onchange="applyPromptFilters()">
+                                    <option value="">All classes</option>
+                                    <option value="thematic">Thematic</option>
+                                    <option value="branded">Branded</option>
+                                </select>
+                                <select id="filterSubtype" class="prompt-filter-select" onchange="applyPromptFilters()">
+                                    <option value="">All subtypes</option>
+                                </select>
+                                <input type="text" id="filterSearch" class="prompt-filter-input" placeholder="Search text..." oninput="applyPromptFilters()">
+                            </div>
+                            <div class="prompt-stats-bar">
+                                <span class="prompt-stat" id="promptStatTotal">0 prompts</span>
+                                <span class="prompt-stat" id="promptStatSelected">0 selected</span>
+                            </div>
+                        </div>
+
+                        <!-- Prompt List -->
+                        <div class="prompt-editor-list" id="promptEditorList"></div>
+
+                        <!-- Add Custom Prompt -->
+                        <div class="prompt-add-panel">
+                            <div class="prompt-add-row">
+                                <input type="text" id="addPromptText" class="form-input prompt-add-input" placeholder="Type a custom prompt...">
+                                <select id="addPromptClass" class="prompt-filter-select">
+                                    <option value="thematic">Thematic</option>
+                                    <option value="branded">Branded</option>
+                                </select>
+                                <button type="button" class="btn btn-ghost btn-sm" onclick="addCustomPrompt()">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                                    Add
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Action buttons -->
+                        <div class="scenario-approve-bar">
+                            <button type="button" class="btn btn-ghost" onclick="selectAllPrompts()">Select All</button>
+                            <button type="button" class="btn btn-ghost" onclick="deselectAllPrompts()">Deselect All</button>
+                            <div style="flex:1"></div>
+                            <button type="button" class="btn btn-accent btn-lg" id="approveScenarioBtn" onclick="approveScenario()">
+                                Confirm Scenario ✓
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Zone 4: Empty State (visible when no scenarios) -->
+                <div id="scenarioEmptyState" class="scenario-empty-state">
+                    <p>Add your first scenario above to get started</p>
+                </div>
+            </div>
+
+            <!-- Step 4: Finalize & Launch -->
+            <div class="wizard-step" data-step="4">
+                <h2>Finalize &amp; Launch</h2>
+                <p class="step-description">Review your settings, add golden facts, and choose LLM providers.</p>
+
+                <!-- Summary of approved scenarios -->
+                <div class="form-group">
+                    <label>Approved scenarios &amp; prompts</label>
+                    <div id="approvedSummary" class="approved-summary"></div>
+                </div>
+
+                <div class="form-group">
+                    <label>Facts &amp; USPs <span class="optional">(optional)</span> <span class="field-count" id="factCount">0 / 50</span></label>
+                    <div class="chip-input-container chip-input-tall" id="factChips">
+                        <input type="text" class="chip-text-input" id="factInput" placeholder="e.g. 'Founded in 2010', 'Over 1M users'">
+                    </div>
+                    <div class="field-hint">Unique selling points, key metrics, verifiable claims</div>
+                </div>
+
+                <div class="form-group">
+                    <label>LLM Providers</label>
+                    <div class="llm-provider-toggles">
+                        <button type="button" class="llm-toggle active" data-llm="chatgpt" onclick="toggleLlm(this)">
+                            <span class="llm-dot" style="background:#10b981"></span> ChatGPT
+                        </button>
+                        <button type="button" class="llm-toggle active" data-llm="deepseek" onclick="toggleLlm(this)">
+                            <span class="llm-dot" style="background:#3b82f6"></span> DeepSeek
+                        </button>
+                        <button type="button" class="llm-toggle active" data-llm="yandexgpt" onclick="toggleLlm(this)">
+                            <span class="llm-dot" style="background:#f59e0b"></span> YandexGPT
+                        </button>
+                        <button type="button" class="llm-toggle" data-llm="gemini" onclick="toggleLlm(this)">
+                            <span class="llm-dot" style="background:#8b5cf6"></span> Gemini
+                        </button>
+                        <button type="button" class="llm-toggle" data-llm="perplexity" onclick="toggleLlm(this)">
+                            <span class="llm-dot" style="background:#ec4899"></span> Perplexity
+                        </button>
+                        <button type="button" class="llm-toggle" data-llm="gigachat" onclick="toggleLlm(this)">
+                            <span class="llm-dot" style="background:#f97316"></span> GigaChat
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Navigation -->
+            <div class="wizard-nav">
+                <button type="button" class="btn btn-ghost" id="wizBackBtn" onclick="wizardBack()" style="visibility:hidden">
+                    &#8592; Back
+                </button>
+                <button type="button" class="btn btn-primary" id="wizNextBtn" onclick="wizardNext()">
+                    Next &#8594;
+                </button>
+                <!-- Step 3: finish scenarios and go to Step 4 -->
+                <button type="button" class="btn btn-accent" id="wizFinishScenariosBtn" onclick="finishScenarios()" style="display:none">
+                    Finish Scenarios &#8594;
+                </button>
+                <button type="button" class="btn btn-accent btn-lg" id="wizSaveBtn" onclick="wizardSave()" style="display:none">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                    Save &amp; Launch
+                </button>
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ============================================================
+   LLM Onboarding Wizard — V3: Per-Scenario Prompt Generation
+   ============================================================ */
+
+var wizState = {
+    step: 1,
+    domain: '',
+    brand: '',
+    brandDescription: '',
+    aliases: [],
+    competitors: [],
+    market: 'ru',
+    geo: '',
+    goldenFacts: [],
+    subBrands: [],              // [{name, aliases: []}]
+    competitorSubBrands: {},    // {competitorName: [{name, aliases: []}]}
+    targetLlms: ['chatgpt', 'deepseek', 'yandexgpt'],
+    intents: ['informational', 'navigational', 'comparative', 'transactional'],
+    // V4: iterative per-scenario workflow
+    scenarioWorkflow: {
+        activeIdx: -1,           // -1 = nothing selected
+        configs: []              // [{name, description, prompts: [], selectedSet: Set, approved: false, status: 'new'}]
+    },
+    projectId: null,
+};
+
+var isSubmitting = false;
+var isResearching = false;
+var brandResearched = false;
+
+/* ---- Chip Input Component ---- */
+
+function initChipInput(inputId, containerId, stateKey, maxItems) {
+    var input = document.getElementById(inputId);
+    if (!input) return;
+    maxItems = maxItems || 50;
+
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            var val = input.value.trim();
+            if (!val) return;
+            if (wizState[stateKey].length >= maxItems) {
+                showToast('Maximum ' + maxItems + ' items', 'warning');
+                return;
+            }
+            var lower = val.toLowerCase();
+            if (wizState[stateKey].some(function(x) { return x.toLowerCase() === lower; })) {
+                showToast('Already added', 'warning');
+                input.value = '';
+                return;
+            }
+            wizState[stateKey].push(val);
+            input.value = '';
+            renderChips(containerId, stateKey);
+            updateCounts();
+            if (stateKey === 'competitors') renderCompetitorSubBrands();
+        }
+    });
+}
+
+function renderChips(containerId, stateKey) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+    var existing = container.querySelectorAll('.chip');
+    existing.forEach(function(c) { c.remove(); });
+    var input = container.querySelector('.chip-text-input');
+    wizState[stateKey].forEach(function(val, idx) {
+        var chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.innerHTML = val + ' <button type="button" class="chip-remove" onclick="removeChip(\'' + stateKey + '\',' + idx + ',\'' + containerId + '\')">&times;</button>';
+        container.insertBefore(chip, input);
+    });
+}
+
+function removeChip(stateKey, idx, containerId) {
+    wizState[stateKey].splice(idx, 1);
+    renderChips(containerId, stateKey);
+    updateCounts();
+    if (stateKey === 'competitors') renderCompetitorSubBrands();
+}
+
+function updateCounts() {
+    var el;
+    el = document.getElementById('compCount');
+    if (el) el.textContent = wizState.competitors.length + ' / 10';
+    el = document.getElementById('catCount');
+    if (el) el.textContent = wizState.scenarioWorkflow.configs.length + ' / 20';
+    el = document.getElementById('factCount');
+    if (el) el.textContent = wizState.goldenFacts.length + ' / 50';
+    el = document.getElementById('subBrandCount');
+    if (el) el.textContent = wizState.subBrands.length + ' / 15';
+}
+
+/* ---- Market Toggle ---- */
+
+function setMarket(m) {
+    wizState.market = m;
+    document.querySelectorAll('.market-btn').forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.market === m);
+    });
+}
+
+/* ---- LLM Provider Toggles ---- */
+
+function toggleLlm(btn) {
+    btn.classList.toggle('active');
+    var llm = btn.dataset.llm;
+    var idx = wizState.targetLlms.indexOf(llm);
+    if (idx >= 0) {
+        wizState.targetLlms.splice(idx, 1);
+    } else {
+        wizState.targetLlms.push(llm);
+    }
+}
+
+/* ---- Brand Description ---- */
+
+function onBrandDescChange() {
+    wizState.brandDescription = (document.getElementById('wizBrandDesc').value || '').trim();
+}
+
+async function researchBrand() {
+    if (!wizState.brand) {
+        showToast('Enter a brand name first', 'warning');
+        return;
+    }
+    if (isResearching) return;
+    isResearching = true;
+
+    var researchBtn = document.getElementById('researchBtn');
+    var statusEl = document.getElementById('researchStatus');
+    researchBtn.disabled = true;
+    statusEl.style.display = '';
+    statusEl.textContent = 'Researching brand...';
+
+    try {
+        var resp = await apiFetch('/api/v1/onboarding/research-brand', {
+            method: 'POST',
+            body: JSON.stringify({
+                brand_name: wizState.brand,
+                domain: wizState.domain || null,
+                market: wizState.market
+            })
+        });
+
+        if (!resp) {
+            statusEl.textContent = 'Authentication error';
+            return;
+        }
+
+        var data = await resp.json();
+
+        if (data.brand_description) {
+            wizState.brandDescription = data.brand_description;
+            var ta = document.getElementById('wizBrandDesc');
+            ta.value = data.brand_description;
+            ta.style.height = 'auto';
+            ta.style.height = ta.scrollHeight + 'px';
+            document.getElementById('brandDescGroup').style.display = '';
+            document.getElementById('subBrandsGroup').style.display = '';
+            statusEl.textContent = 'Description generated. Edit if needed.';
+            brandResearched = true;
+        } else {
+            statusEl.textContent = data.message || 'Could not generate description';
+        }
+    } catch (e) {
+        statusEl.textContent = 'Error: ' + e.message;
+    } finally {
+        isResearching = false;
+        researchBtn.disabled = false;
+        setTimeout(function() { statusEl.style.display = 'none'; }, 5000);
+    }
+}
+
+/* ---- AI Suggestions (Competitors & Categories) ---- */
+
+var isSuggestingComp = false;
+var isSuggestingCat = false;
+
+async function suggestCompetitors() {
+    if (!wizState.brand) {
+        showToast('Enter a brand name first (Step 1)', 'warning');
+        return;
+    }
+    if (isSuggestingComp) return;
+    isSuggestingComp = true;
+
+    var btn = document.getElementById('suggestCompBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></path></svg> ...';
+
+    try {
+        var resp = await apiFetch('/api/v1/onboarding/suggest-competitors', {
+            method: 'POST',
+            body: JSON.stringify({
+                brand_name: wizState.brand,
+                brand_description: wizState.brandDescription,
+                market: wizState.market,
+                existing: wizState.competitors
+            })
+        });
+
+        if (!resp) return;
+        var data = await resp.json();
+
+        if (data.competitors && data.competitors.length > 0) {
+            renderSuggestionChips('compSuggestions', 'compSuggestionChips', data.competitors, 'competitors', 'compChips', 10);
+        } else {
+            showToast(data.error === 'no_api_key' ? 'No API keys configured' : 'No suggestions found', 'warning');
+        }
+    } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+    } finally {
+        isSuggestingComp = false;
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Suggest';
+    }
+}
+
+async function suggestCategories() {
+    if (!wizState.brand) {
+        showToast('Enter a brand name first (Step 1)', 'warning');
+        return;
+    }
+    if (isSuggestingCat) return;
+    isSuggestingCat = true;
+
+    var btn = document.getElementById('suggestCatBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></path></svg> ...';
+
+    try {
+        var resp = await apiFetch('/api/v1/onboarding/suggest-categories', {
+            method: 'POST',
+            body: JSON.stringify({
+                brand_name: wizState.brand,
+                brand_description: wizState.brandDescription,
+                market: wizState.market,
+                existing: wizState.scenarioWorkflow.configs.map(function(c) { return c.name; })
+            })
+        });
+
+        if (!resp) return;
+        var data = await resp.json();
+
+        if (data.categories && data.categories.length > 0) {
+            renderScenarioSuggestionChips(data.categories);
+        } else {
+            showToast(data.error === 'no_api_key' ? 'No API keys configured' : 'No suggestions found', 'warning');
+        }
+    } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+    } finally {
+        isSuggestingCat = false;
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Suggest';
+    }
+}
+
+/* ---- Sub-Brand Management (Step 1 & Step 2) ---- */
+
+var isSuggestingSubBrands = false;
+
+function renderSubBrandCards() {
+    var container = document.getElementById('subBrandCards');
+    if (!container) return;
+    var html = '';
+    wizState.subBrands.forEach(function(sb, idx) {
+        html += '<div class="sub-brand-card">';
+        html += '<div class="sub-brand-card-header">';
+        html += '<span class="sub-brand-card-name">' + escapeHtml(sb.name) + '</span>';
+        html += '<button type="button" class="scenario-card-remove" onclick="removeSubBrand(' + idx + ')" title="Remove">&times;</button>';
+        html += '</div>';
+        html += '<div class="sub-brand-card-aliases">';
+        sb.aliases.forEach(function(alias, ai) {
+            html += '<span class="chip chip-sm">' + escapeHtml(alias) + ' <button type="button" class="chip-remove" onclick="removeSubBrandAlias(' + idx + ',' + ai + ')">&times;</button></span>';
+        });
+        html += '<input type="text" class="sub-brand-alias-input" placeholder="+ alias" maxlength="255" onkeydown="if(event.key===\'Enter\'){event.preventDefault();addSubBrandAlias(' + idx + ',this);}">';
+        html += '</div>';
+        html += '</div>';
+    });
+    container.innerHTML = html;
+    updateCounts();
+}
+
+function addSubBrand() {
+    var nameInput = document.getElementById('subBrandNameInput');
+    var aliasesInput = document.getElementById('subBrandAliasesInput');
+    var name = (nameInput.value || '').trim();
+    if (!name) { showToast('Enter a sub-brand name', 'warning'); return; }
+    if (wizState.subBrands.length >= 15) { showToast('Maximum 15 sub-brands', 'warning'); return; }
+    if (wizState.subBrands.some(function(s) { return s.name.toLowerCase() === name.toLowerCase(); })) {
+        showToast('Sub-brand already exists', 'warning'); return;
+    }
+    var aliases = (aliasesInput.value || '').split(',').map(function(a) { return a.trim(); }).filter(Boolean);
+    wizState.subBrands.push({name: name, aliases: aliases});
+    nameInput.value = '';
+    aliasesInput.value = '';
+    nameInput.focus();
+    renderSubBrandCards();
+}
+
+function removeSubBrand(idx) {
+    wizState.subBrands.splice(idx, 1);
+    renderSubBrandCards();
+}
+
+function addSubBrandAlias(sbIdx, inputEl) {
+    var val = (inputEl.value || '').trim();
+    if (!val) return;
+    var sb = wizState.subBrands[sbIdx];
+    if (!sb) return;
+    if (sb.aliases.some(function(a) { return a.toLowerCase() === val.toLowerCase(); })) {
+        showToast('Alias already exists', 'warning'); return;
+    }
+    sb.aliases.push(val);
+    inputEl.value = '';
+    renderSubBrandCards();
+}
+
+function removeSubBrandAlias(sbIdx, aliasIdx) {
+    var sb = wizState.subBrands[sbIdx];
+    if (!sb) return;
+    sb.aliases.splice(aliasIdx, 1);
+    renderSubBrandCards();
+}
+
+async function suggestSubBrands() {
+    if (!wizState.brand) { showToast('Enter a brand name first', 'warning'); return; }
+    if (isSuggestingSubBrands) return;
+    isSuggestingSubBrands = true;
+
+    var btn = document.getElementById('suggestSubBrandsBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></path></svg> ...';
+
+    try {
+        var resp = await apiFetch('/api/v1/onboarding/suggest-sub-brands', {
+            method: 'POST',
+            body: JSON.stringify({
+                brand_name: wizState.brand,
+                brand_description: wizState.brandDescription,
+                market: wizState.market,
+                existing: wizState.subBrands.map(function(s) { return s.name; })
+            })
+        });
+
+        if (!resp) return;
+        var data = await resp.json();
+
+        if (data.sub_brands && data.sub_brands.length > 0) {
+            renderSubBrandSuggestions(data.sub_brands);
+        } else {
+            showToast(data.error === 'no_api_key' ? 'No API keys configured' : 'No sub-brand suggestions found', 'warning');
+        }
+    } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+    } finally {
+        isSuggestingSubBrands = false;
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Suggest';
+    }
+}
+
+function renderSubBrandSuggestions(suggestions) {
+    var container = document.getElementById('subBrandSuggestions');
+    var chipsEl = document.getElementById('subBrandSuggestionChips');
+    container.style.display = '';
+
+    var html = '';
+    suggestions.forEach(function(item) {
+        var name = typeof item === 'string' ? item : item.name;
+        var aliases = (typeof item === 'object' && item.aliases) ? item.aliases : [];
+        var lower = name.toLowerCase();
+        if (wizState.subBrands.some(function(s) { return s.name.toLowerCase() === lower; })) return;
+        var dataAliases = aliases.length > 0 ? ' data-aliases="' + escapeHtml(aliases.join(',')) + '"' : '';
+        html += '<span class="suggestion-chip" onclick="acceptSubBrandSuggestion(this)"' + dataAliases + '>';
+        html += '+ ' + escapeHtml(name);
+        if (aliases.length > 0) html += ' <small style="opacity:0.6">(' + aliases.length + ' aliases)</small>';
+        html += '</span>';
+    });
+
+    if (!html) {
+        container.style.display = 'none';
+        showToast('All suggestions already added', 'info');
+        return;
+    }
+    chipsEl.innerHTML = html;
+}
+
+function acceptSubBrandSuggestion(chipEl) {
+    var text = chipEl.textContent.replace(/^\+\s*/, '').replace(/\s*\(\d+ aliases\)\s*$/, '').trim();
+    if (!text) return;
+    if (wizState.subBrands.length >= 15) { showToast('Maximum 15 sub-brands', 'warning'); return; }
+    if (wizState.subBrands.some(function(s) { return s.name.toLowerCase() === text.toLowerCase(); })) {
+        chipEl.remove(); return;
+    }
+    var aliasStr = chipEl.getAttribute('data-aliases') || '';
+    var aliases = aliasStr ? aliasStr.split(',').map(function(a) { return a.trim(); }).filter(Boolean) : [];
+    wizState.subBrands.push({name: text, aliases: aliases});
+    chipEl.remove();
+    renderSubBrandCards();
+
+    var parent = chipEl.parentElement;
+    if (parent && parent.children.length === 0) {
+        parent.parentElement.style.display = 'none';
+    }
+}
+
+/* ---- Competitor Sub-Brands (Step 2) ---- */
+
+function renderCompetitorSubBrands() {
+    var container = document.getElementById('competitorSubBrandsContainer');
+    var group = document.getElementById('competitorSubBrandsGroup');
+    if (!container) return;
+
+    if (wizState.competitors.length === 0) {
+        group.style.display = 'none';
+        return;
+    }
+    group.style.display = '';
+
+    // Ensure all competitors have entries
+    wizState.competitors.forEach(function(comp) {
+        if (!wizState.competitorSubBrands[comp]) {
+            wizState.competitorSubBrands[comp] = [];
+        }
+    });
+    // Remove entries for deleted competitors
+    Object.keys(wizState.competitorSubBrands).forEach(function(key) {
+        if (wizState.competitors.indexOf(key) === -1) {
+            delete wizState.competitorSubBrands[key];
+        }
+    });
+
+    var html = '';
+    wizState.competitors.forEach(function(comp) {
+        var subs = wizState.competitorSubBrands[comp] || [];
+        html += '<div class="competitor-accordion">';
+        html += '<div class="competitor-accordion-header" onclick="toggleCompAccordion(this)">';
+        html += '<span>' + escapeHtml(comp) + ' <small style="opacity:0.6">(' + subs.length + ')</small></span>';
+        html += '<span class="accordion-arrow">&#9660;</span>';
+        html += '</div>';
+        html += '<div class="competitor-accordion-body">';
+
+        // Sub-brand cards for this competitor
+        subs.forEach(function(sb, idx) {
+            html += '<div class="sub-brand-card">';
+            html += '<div class="sub-brand-card-header">';
+            html += '<span class="sub-brand-card-name">' + escapeHtml(sb.name) + '</span>';
+            html += '<button type="button" class="scenario-card-remove" onclick="removeCompetitorSubBrand(\'' + escapeHtml(comp).replace(/'/g, "\\'") + '\',' + idx + ')" title="Remove">&times;</button>';
+            html += '</div>';
+            html += '<div class="sub-brand-card-aliases">';
+            sb.aliases.forEach(function(alias, ai) {
+                html += '<span class="chip chip-sm">' + escapeHtml(alias) + ' <button type="button" class="chip-remove" onclick="removeCompSubBrandAlias(\'' + escapeHtml(comp).replace(/'/g, "\\'") + '\',' + idx + ',' + ai + ')">&times;</button></span>';
+            });
+            html += '<input type="text" class="sub-brand-alias-input" placeholder="+ alias" maxlength="255" onkeydown="if(event.key===\'Enter\'){event.preventDefault();addCompSubBrandAlias(\'' + escapeHtml(comp).replace(/'/g, "\\'") + '\',' + idx + ',this);}">';
+            html += '</div>';
+            html += '</div>';
+        });
+
+        // Add sub-brand row
+        var compId = comp.replace(/[^a-zA-Z0-9]/g, '_');
+        html += '<div class="sub-brand-add-row">';
+        html += '<input type="text" class="form-input" id="compSbName_' + compId + '" placeholder="Sub-brand name" maxlength="255">';
+        html += '<input type="text" class="form-input" id="compSbAliases_' + compId + '" placeholder="Aliases (comma-sep)" maxlength="500">';
+        html += '<button type="button" class="btn btn-ghost btn-sm" onclick="addCompetitorSubBrand(\'' + escapeHtml(comp).replace(/'/g, "\\'") + '\',\'' + compId + '\')">Add</button>';
+        html += '</div>';
+
+        // Suggest button
+        html += '<button type="button" class="btn btn-ghost btn-sm" style="margin-top:4px" onclick="suggestCompetitorSubBrands(\'' + escapeHtml(comp).replace(/'/g, "\\'") + '\')" id="suggestCompSb_' + compId + '">';
+        html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Suggest';
+        html += '</button>';
+        html += '<div class="suggestions-container" id="compSbSuggestions_' + compId + '" style="display:none"><div class="suggestions-label">Suggestions:</div><div class="suggestions-chips" id="compSbChips_' + compId + '"></div></div>';
+
+        html += '</div>'; // accordion-body
+        html += '</div>'; // accordion
+    });
+
+    container.innerHTML = html;
+}
+
+function toggleCompAccordion(headerEl) {
+    var body = headerEl.nextElementSibling;
+    var arrow = headerEl.querySelector('.accordion-arrow');
+    if (body.style.display === 'none') {
+        body.style.display = '';
+        arrow.innerHTML = '&#9660;';
+    } else {
+        body.style.display = 'none';
+        arrow.innerHTML = '&#9654;';
+    }
+}
+
+function addCompetitorSubBrand(compName, compId) {
+    var nameInput = document.getElementById('compSbName_' + compId);
+    var aliasesInput = document.getElementById('compSbAliases_' + compId);
+    var name = (nameInput.value || '').trim();
+    if (!name) { showToast('Enter a sub-brand name', 'warning'); return; }
+    if (!wizState.competitorSubBrands[compName]) wizState.competitorSubBrands[compName] = [];
+    var subs = wizState.competitorSubBrands[compName];
+    if (subs.length >= 15) { showToast('Maximum 15 sub-brands per competitor', 'warning'); return; }
+    if (subs.some(function(s) { return s.name.toLowerCase() === name.toLowerCase(); })) {
+        showToast('Sub-brand already exists', 'warning'); return;
+    }
+    var aliases = (aliasesInput.value || '').split(',').map(function(a) { return a.trim(); }).filter(Boolean);
+    subs.push({name: name, aliases: aliases});
+    renderCompetitorSubBrands();
+}
+
+function removeCompetitorSubBrand(compName, idx) {
+    if (!wizState.competitorSubBrands[compName]) return;
+    wizState.competitorSubBrands[compName].splice(idx, 1);
+    renderCompetitorSubBrands();
+}
+
+function addCompSubBrandAlias(compName, sbIdx, inputEl) {
+    var val = (inputEl.value || '').trim();
+    if (!val) return;
+    var sb = (wizState.competitorSubBrands[compName] || [])[sbIdx];
+    if (!sb) return;
+    if (sb.aliases.some(function(a) { return a.toLowerCase() === val.toLowerCase(); })) {
+        showToast('Alias already exists', 'warning'); return;
+    }
+    sb.aliases.push(val);
+    inputEl.value = '';
+    renderCompetitorSubBrands();
+}
+
+function removeCompSubBrandAlias(compName, sbIdx, aliasIdx) {
+    var sb = (wizState.competitorSubBrands[compName] || [])[sbIdx];
+    if (!sb) return;
+    sb.aliases.splice(aliasIdx, 1);
+    renderCompetitorSubBrands();
+}
+
+async function suggestCompetitorSubBrands(compName) {
+    if (!compName) return;
+    var compId = compName.replace(/[^a-zA-Z0-9]/g, '_');
+    var btn = document.getElementById('suggestCompSb_' + compId);
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></path></svg> ...';
+
+    try {
+        var existing = (wizState.competitorSubBrands[compName] || []).map(function(s) { return s.name; });
+        var resp = await apiFetch('/api/v1/onboarding/suggest-sub-brands', {
+            method: 'POST',
+            body: JSON.stringify({
+                brand_name: compName,
+                brand_description: '',
+                market: wizState.market,
+                existing: existing
+            })
+        });
+
+        if (!resp) return;
+        var data = await resp.json();
+
+        if (data.sub_brands && data.sub_brands.length > 0) {
+            var sugContainer = document.getElementById('compSbSuggestions_' + compId);
+            var sugChips = document.getElementById('compSbChips_' + compId);
+            sugContainer.style.display = '';
+            var html = '';
+            data.sub_brands.forEach(function(item) {
+                var name = typeof item === 'string' ? item : item.name;
+                var aliases = (typeof item === 'object' && item.aliases) ? item.aliases : [];
+                var lower = name.toLowerCase();
+                if (existing.some(function(e) { return e.toLowerCase() === lower; })) return;
+                var dataAliases = aliases.length > 0 ? ' data-aliases="' + escapeHtml(aliases.join(',')) + '"' : '';
+                html += '<span class="suggestion-chip" onclick="acceptCompSubBrandSuggestion(this,\'' + escapeHtml(compName).replace(/'/g, "\\'") + '\')"' + dataAliases + '>';
+                html += '+ ' + escapeHtml(name);
+                if (aliases.length > 0) html += ' <small style="opacity:0.6">(' + aliases.length + ')</small>';
+                html += '</span>';
+            });
+            if (!html) {
+                sugContainer.style.display = 'none';
+                showToast('All suggestions already added', 'info');
+            } else {
+                sugChips.innerHTML = html;
+            }
+        } else {
+            showToast('No sub-brand suggestions found', 'warning');
+        }
+    } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Suggest';
+    }
+}
+
+function acceptCompSubBrandSuggestion(chipEl, compName) {
+    var text = chipEl.textContent.replace(/^\+\s*/, '').replace(/\s*\(\d+ aliases\)\s*$/, '').trim();
+    if (!text) return;
+    if (!wizState.competitorSubBrands[compName]) wizState.competitorSubBrands[compName] = [];
+    var subs = wizState.competitorSubBrands[compName];
+    if (subs.length >= 15) { showToast('Maximum 15 sub-brands', 'warning'); return; }
+    if (subs.some(function(s) { return s.name.toLowerCase() === text.toLowerCase(); })) {
+        chipEl.remove(); return;
+    }
+    var aliasStr = chipEl.getAttribute('data-aliases') || '';
+    var aliases = aliasStr ? aliasStr.split(',').map(function(a) { return a.trim(); }).filter(Boolean) : [];
+    subs.push({name: text, aliases: aliases});
+    chipEl.remove();
+    renderCompetitorSubBrands();
+
+    var parent = chipEl.parentElement;
+    if (parent && parent.children.length === 0) {
+        parent.parentElement.style.display = 'none';
+    }
+}
+
+function renderSuggestionChips(containerId, chipsId, items, stateKey, chipContainerId, maxItems) {
+    var container = document.getElementById(containerId);
+    var chipsEl = document.getElementById(chipsId);
+    container.style.display = '';
+
+    var html = '';
+    items.forEach(function(item) {
+        var lower = item.toLowerCase();
+        if (wizState[stateKey].some(function(x) { return x.toLowerCase() === lower; })) return;
+        html += '<span class="suggestion-chip" onclick="acceptSuggestion(this, \'' + stateKey + '\', \'' + chipContainerId + '\', ' + maxItems + ')">';
+        html += '+ ' + item;
+        html += '</span>';
+    });
+
+    if (!html) {
+        container.style.display = 'none';
+        showToast('All suggestions already added', 'info');
+        return;
+    }
+    chipsEl.innerHTML = html;
+}
+
+function acceptSuggestion(chipEl, stateKey, chipContainerId, maxItems) {
+    var text = chipEl.textContent.replace(/^\+\s*/, '').trim();
+    if (!text) return;
+    if (wizState[stateKey].length >= maxItems) {
+        showToast('Maximum ' + maxItems + ' items', 'warning');
+        return;
+    }
+    var lower = text.toLowerCase();
+    if (wizState[stateKey].some(function(x) { return x.toLowerCase() === lower; })) {
+        chipEl.remove();
+        return;
+    }
+    wizState[stateKey].push(text);
+    chipEl.remove();
+    renderChips(chipContainerId, stateKey);
+    updateCounts();
+    if (stateKey === 'competitors') renderCompetitorSubBrands();
+
+    var parent = chipEl.parentElement;
+    if (parent && parent.children.length === 0) {
+        parent.parentElement.style.display = 'none';
+    }
+}
+
+/* ---- Scenario Input & List (V4 Iterative Workflow) ---- */
+
+function initScenarioInput() {
+    var input = document.getElementById('catInput');
+    if (!input) return;
+
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            addScenarioFromInput();
+        }
+    });
+}
+
+function addScenarioFromInput() {
+    var input = document.getElementById('catInput');
+    var val = (input.value || '').trim();
+    if (!val) return;
+    var wf = wizState.scenarioWorkflow;
+    if (wf.configs.length >= 20) {
+        showToast('Maximum 20 scenarios', 'warning');
+        return;
+    }
+    var lower = val.toLowerCase();
+    if (wf.configs.some(function(c) { return c.name.toLowerCase() === lower; })) {
+        showToast('Already added', 'warning');
+        input.value = '';
+        return;
+    }
+    wf.configs.push({
+        name: val,
+        description: '',
+        prompts: [],
+        selectedSet: new Set(),
+        approved: false,
+        status: 'new'
+    });
+    input.value = '';
+    // Auto-select the new scenario
+    selectScenario(wf.configs.length - 1);
+    updateCounts();
+}
+
+function renderScenarioList() {
+    var container = document.getElementById('scenarioListCards');
+    var emptyState = document.getElementById('scenarioEmptyState');
+    var wf = wizState.scenarioWorkflow;
+
+    if (wf.configs.length === 0) {
+        container.innerHTML = '';
+        emptyState.style.display = '';
+        return;
+    }
+    emptyState.style.display = 'none';
+
+    var html = '';
+    wf.configs.forEach(function(cfg, idx) {
+        var isActive = (idx === wf.activeIdx);
+        var badge = '';
+        switch (cfg.status) {
+            case 'approved': badge = '<span class="sl-badge sl-badge--approved" title="Approved">&#10003;</span>'; break;
+            case 'skipped': badge = '<span class="sl-badge sl-badge--skipped" title="Skipped">&mdash;</span>'; break;
+            case 'generating': badge = '<span class="sl-badge sl-badge--generating" title="Generating"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="10" opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></path></svg></span>'; break;
+            case 'reviewing': badge = '<span class="sl-badge sl-badge--reviewing" title="Review prompts">&#9679;</span>'; break;
+            case 'editing': badge = '<span class="sl-badge sl-badge--editing" title="Editing">&#9679;</span>'; break;
+            default: badge = '<span class="sl-badge sl-badge--new" title="New">&#9675;</span>'; break;
+        }
+        html += '<div class="scenario-list-card' + (isActive ? ' active' : '') + '" onclick="selectScenario(' + idx + ')">';
+        html += badge;
+        html += '<span class="sl-card-name">' + escapeHtml(cfg.name) + '</span>';
+        html += '<button type="button" class="sl-card-remove" onclick="event.stopPropagation();removeActiveScenario(' + idx + ')" title="Remove">&times;</button>';
+        html += '</div>';
+    });
+
+    container.innerHTML = html;
+
+    // Update finish button state
+    var finBtn = document.getElementById('wizFinishScenariosBtn');
+    if (finBtn) {
+        var hasApproved = wf.configs.some(function(c) { return c.approved; });
+        finBtn.disabled = !hasApproved;
+    }
+}
+
+function selectScenario(idx) {
+    var wf = wizState.scenarioWorkflow;
+    if (idx < 0 || idx >= wf.configs.length) return;
+
+    // Save current description before switching
+    if (wf.activeIdx >= 0 && wf.activeIdx < wf.configs.length) {
+        var oldCfg = wf.configs[wf.activeIdx];
+        var descEl = document.getElementById('currentScenarioDesc');
+        if (descEl) oldCfg.description = descEl.value.trim();
+        if (oldCfg.status === 'new' && oldCfg.description) oldCfg.status = 'editing';
+    }
+
+    wf.activeIdx = idx;
+    var cfg = wf.configs[idx];
+    if (cfg.status === 'new' || cfg.status === 'editing') {
+        cfg.status = cfg.description ? 'editing' : 'new';
+    }
+
+    renderScenarioList();
+    renderActiveScenario();
+}
+
+function renderActiveScenario() {
+    var wf = wizState.scenarioWorkflow;
+    var editorEl = document.getElementById('activeScenarioEditor');
+    var emptyState = document.getElementById('scenarioEmptyState');
+
+    if (wf.activeIdx < 0 || wf.activeIdx >= wf.configs.length) {
+        editorEl.style.display = 'none';
+        if (wf.configs.length === 0) emptyState.style.display = '';
+        return;
+    }
+
+    var cfg = wf.configs[wf.activeIdx];
+    editorEl.style.display = '';
+    emptyState.style.display = 'none';
+
+    // Scenario name
+    document.getElementById('currentScenarioName').textContent = cfg.name;
+
+    // Description
+    document.getElementById('currentScenarioDesc').value = cfg.description;
+
+    // Show/hide prompt editor based on whether prompts have been generated
+    var promptEditorEl = document.getElementById('scenarioPromptEditor');
+    if (cfg.prompts.length > 0) {
+        promptEditorEl.style.display = '';
+        populateFilterDropdowns(cfg);
+        renderPromptEditor(cfg);
+    } else {
+        promptEditorEl.style.display = 'none';
+    }
+
+    // Hide generation status
+    document.getElementById('scenarioGenStatus').style.display = 'none';
+
+    // Update Generate button text based on whether prompts already exist
+    var genBtn = document.getElementById('genPromptsBtn');
+    if (cfg.prompts.length > 0) {
+        genBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Generate More';
+    } else {
+        genBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Generate Prompts';
+    }
+}
+
+function removeActiveScenario(idx) {
+    var wf = wizState.scenarioWorkflow;
+    if (idx < 0 || idx >= wf.configs.length) return;
+
+    wf.configs.splice(idx, 1);
+
+    if (wf.configs.length === 0) {
+        wf.activeIdx = -1;
+    } else if (wf.activeIdx === idx) {
+        // Deleted the active one
+        wf.activeIdx = Math.min(idx, wf.configs.length - 1);
+    } else if (wf.activeIdx > idx) {
+        wf.activeIdx--;
+    }
+
+    renderScenarioList();
+    if (wf.activeIdx >= 0) {
+        renderActiveScenario();
+    } else {
+        document.getElementById('activeScenarioEditor').style.display = 'none';
+        document.getElementById('scenarioEmptyState').style.display = '';
+    }
+    updateCounts();
+}
+
+function saveActiveScenarioState() {
+    var wf = wizState.scenarioWorkflow;
+    if (wf.activeIdx >= 0 && wf.activeIdx < wf.configs.length) {
+        var descEl = document.getElementById('currentScenarioDesc');
+        if (descEl) wf.configs[wf.activeIdx].description = descEl.value.trim();
+    }
+}
+
+function finishScenarios() {
+    saveActiveScenarioState();
+    var wf = wizState.scenarioWorkflow;
+    var approvedCount = wf.configs.filter(function(c) { return c.approved; }).length;
+    if (approvedCount === 0) {
+        showToast('Approve at least one scenario before finishing', 'warning');
+        return;
+    }
+    showStep(4);
+}
+
+function renderScenarioSuggestionChips(items) {
+    var container = document.getElementById('catSuggestions');
+    var chipsEl = document.getElementById('catSuggestionChips');
+    container.style.display = '';
+    var wf = wizState.scenarioWorkflow;
+
+    var html = '';
+    items.forEach(function(item) {
+        var lower = item.toLowerCase();
+        if (wf.configs.some(function(c) { return c.name.toLowerCase() === lower; })) return;
+        html += '<span class="suggestion-chip" onclick="acceptScenarioSuggestion(this)">';
+        html += '+ ' + item;
+        html += '</span>';
+    });
+
+    if (!html) {
+        container.style.display = 'none';
+        showToast('All suggestions already added', 'info');
+        return;
+    }
+    chipsEl.innerHTML = html;
+}
+
+function acceptScenarioSuggestion(chipEl) {
+    var text = chipEl.textContent.replace(/^\+\s*/, '').trim();
+    if (!text) return;
+    var wf = wizState.scenarioWorkflow;
+    if (wf.configs.length >= 20) {
+        showToast('Maximum 20 scenarios', 'warning');
+        return;
+    }
+    var lower = text.toLowerCase();
+    if (wf.configs.some(function(c) { return c.name.toLowerCase() === lower; })) {
+        chipEl.remove();
+        return;
+    }
+    wf.configs.push({
+        name: text,
+        description: '',
+        prompts: [],
+        selectedSet: new Set(),
+        approved: false,
+        status: 'new'
+    });
+    chipEl.remove();
+    // Auto-select the new scenario
+    selectScenario(wf.configs.length - 1);
+    updateCounts();
+
+    var parent = chipEl.parentElement;
+    if (parent && parent.children.length === 0) {
+        parent.parentElement.style.display = 'none';
+    }
+}
+
+/* ---- State Sync from Inputs ---- */
+
+function onWizChange() {
+    var oldBrand = wizState.brand;
+    wizState.domain = (document.getElementById('wizDomain').value || '').trim();
+    wizState.brand = (document.getElementById('wizBrand').value || '').trim();
+    wizState.geo = (document.getElementById('wizGeo').value || '').trim();
+    if (oldBrand && wizState.brand && oldBrand.toLowerCase() !== wizState.brand.toLowerCase()) {
+        brandResearched = false;
+    }
+
+    if (wizState.brand) {
+        document.getElementById('brandDescGroup').style.display = '';
+    }
+}
+
+/* ---- Navigation (4 steps) ---- */
+
+function showStep(n) {
+    wizState.step = n;
+    // Update progress bar
+    document.querySelectorAll('.wizard-progress-step').forEach(function(el) {
+        var s = parseInt(el.dataset.step);
+        el.classList.toggle('active', s === n);
+        el.classList.toggle('completed', s < n);
+    });
+    document.querySelectorAll('.step-connector').forEach(function(el, idx) {
+        el.classList.toggle('completed', idx < n - 1);
+    });
+    // Show/hide step panels
+    document.querySelectorAll('.wizard-step').forEach(function(el) {
+        el.classList.toggle('active', parseInt(el.dataset.step) === n);
+    });
+
+    // Navigation buttons
+    document.getElementById('wizBackBtn').style.visibility = n > 1 ? 'visible' : 'hidden';
+
+    // Determine which nav buttons to show
+    var showNext = (n <= 2);
+    var showFinishScenarios = (n === 3);
+    var showSave = (n === 4);
+
+    document.getElementById('wizNextBtn').style.display = showNext ? '' : 'none';
+    document.getElementById('wizFinishScenariosBtn').style.display = showFinishScenarios ? '' : 'none';
+    document.getElementById('wizSaveBtn').style.display = showSave ? '' : 'none';
+
+    // Bottom nav always visible
+    document.querySelector('.wizard-nav').style.display = '';
+
+    // Step 3: render scenario list
+    if (n === 3) {
+        renderScenarioList();
+        if (wizState.scenarioWorkflow.activeIdx >= 0) {
+            renderActiveScenario();
+        }
+    }
+
+    // Step 4: render approved summary
+    if (n === 4) {
+        renderApprovedSummary();
+    }
+}
+
+function wizardNext() {
+    if (!validateStep(wizState.step)) return;
+
+    // Auto-research brand when leaving Step 1
+    if (wizState.step === 1 && !brandResearched && !wizState.brandDescription) {
+        researchBrand();
+    }
+
+    if (wizState.step < 3) {
+        showStep(wizState.step + 1);
+    }
+}
+
+function wizardBack() {
+    if (wizState.step > 1) {
+        showStep(wizState.step - 1);
+    }
+}
+
+function validateStep(n) {
+    clearErrors();
+    if (n === 1) {
+        if (!wizState.brand) {
+            showFieldError('wizBrandError', 'Brand name is required');
+            document.getElementById('wizBrand').focus();
+            return false;
+        }
+    }
+    if (n === 2) {
+        if (wizState.competitors.length < 1) {
+            showFieldError('compError', 'Add at least one competitor');
+            document.getElementById('compInput').focus();
+            return false;
+        }
+    }
+    if (n === 3) {
+        var approvedCount = wizState.scenarioWorkflow.configs.filter(function(c) { return c.approved; }).length;
+        if (approvedCount < 1) {
+            showFieldError('catError', 'Approve at least one scenario');
+            return false;
+        }
+    }
+    return true;
+}
+
+function showFieldError(id, msg) {
+    var el = document.getElementById(id);
+    if (el) { el.textContent = msg; el.style.display = 'block'; }
+}
+
+function clearErrors() {
+    document.querySelectorAll('.field-error').forEach(function(el) {
+        el.textContent = '';
+        el.style.display = 'none';
+    });
+}
+
+/* ---- Step 3: Scenario Description & Prompt Generation ---- */
+
+function onScenarioDescChange() {
+    var wf = wizState.scenarioWorkflow;
+    var cfg = wf.configs[wf.activeIdx];
+    if (cfg) {
+        cfg.description = (document.getElementById('currentScenarioDesc').value || '').trim();
+        if (cfg.status === 'new') cfg.status = 'editing';
+    }
+}
+
+async function generateScenarioDescription() {
+    var wf = wizState.scenarioWorkflow;
+    var cfg = wf.configs[wf.activeIdx];
+    if (!cfg) return;
+
+    var btn = document.getElementById('genDescBtn');
+    var statusEl = document.getElementById('descGenStatus');
+    btn.disabled = true;
+    statusEl.style.display = '';
+    statusEl.textContent = 'Generating description...';
+
+    try {
+        var resp = await apiFetch('/api/v1/onboarding/generate-scenario-description', {
+            method: 'POST',
+            body: JSON.stringify({
+                brand_name: wizState.brand,
+                brand_description: wizState.brandDescription,
+                scenario_name: cfg.name,
+                market: wizState.market
+            })
+        });
+
+        if (!resp) {
+            statusEl.textContent = 'Authentication error';
+            return;
+        }
+
+        var data = await resp.json();
+        if (data.description) {
+            cfg.description = data.description;
+            document.getElementById('currentScenarioDesc').value = data.description;
+            statusEl.textContent = 'Description generated.';
+        } else {
+            statusEl.textContent = data.error || 'Could not generate description';
+        }
+    } catch (e) {
+        statusEl.textContent = 'Error: ' + e.message;
+    } finally {
+        btn.disabled = false;
+        setTimeout(function() { statusEl.style.display = 'none'; }, 4000);
+    }
+}
+
+async function generateScenarioPrompts() {
+    var wf = wizState.scenarioWorkflow;
+    var cfg = wf.configs[wf.activeIdx];
+    if (!cfg) return;
+    if (isSubmitting) return;
+    isSubmitting = true;
+
+    var genBtn = document.getElementById('genPromptsBtn');
+    genBtn.disabled = true;
+
+    var isFirstBatch = !cfg.prompts || cfg.prompts.length === 0;
+
+    cfg.status = 'generating';
+    renderScenarioList();
+
+    document.getElementById('scenarioGenStatus').style.display = '';
+    document.getElementById('scenarioGenStatusText').textContent = 'Generating prompts with AI...';
+    if (isFirstBatch) {
+        document.getElementById('scenarioPromptEditor').style.display = 'none';
+    }
+
+    try {
+        var genPayload = {
+            brand: wizState.brand,
+            brand_description: wizState.brandDescription,
+            brand_aliases: wizState.aliases,
+            competitors: wizState.competitors,
+            categories: [{name: cfg.name, description: cfg.description || ''}],
+            market: wizState.market,
+            geo: wizState.geo,
+            personas: ['beginner', 'skeptic'],
+            intents: wizState.intents,
+            target_llms: ['chatgpt'],
+            golden_facts: wizState.goldenFacts,
+            enable_expansion: true
+        };
+
+        var genResp = await apiFetch('/api/v1/prompt-engine/generate', {
+            method: 'POST',
+            body: JSON.stringify(genPayload)
+        });
+
+        if (!genResp || !genResp.ok) {
+            var errMsg = genResp ? (await genResp.json().catch(function() { return {}; })).detail || 'Generation failed' : 'Auth error';
+            showToast(errMsg, 'error');
+            document.getElementById('scenarioGenStatus').style.display = 'none';
+            return;
+        }
+
+        var genData = await genResp.json();
+
+        // Build new prompt objects starting from current max index
+        var startIdx = cfg.prompts ? cfg.prompts.length : 0;
+        var newPrompts = (genData.prompts || []).map(function(p, i) {
+            var meta = p.metadata || {};
+            return {
+                idx: startIdx + i,
+                user_prompt: p.user_prompt || '',
+                query_class: meta.query_class || '',
+                query_subtype: meta.query_subtype || '',
+                persona: meta.persona || '',
+                intent: meta.intent || '',
+                category: meta.category || '',
+                measurement_type: meta.measurement_type || '',
+                target_llm: p.target_llm || '',
+                editing: false
+            };
+        });
+
+        // Append to existing prompts (not replace)
+        if (!cfg.prompts) cfg.prompts = [];
+        if (!cfg.selectedSet) cfg.selectedSet = new Set();
+        cfg.prompts = cfg.prompts.concat(newPrompts);
+
+        // New prompts are NOT auto-selected — user decides
+        cfg.status = 'reviewing';
+        renderScenarioList();
+
+        document.getElementById('scenarioGenStatus').style.display = 'none';
+        document.getElementById('scenarioPromptEditor').style.display = '';
+
+        // Update button text
+        genBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Generate More';
+
+        populateFilterDropdowns(cfg);
+        renderPromptEditor(cfg);
+        showToast(newPrompts.length + ' prompts added.', 'success');
+
+        // Warn if template fallback was used instead of LLM
+        if (genData.generation_method && genData.generation_method !== 'llm_v2') {
+            var statusEl = document.getElementById('scenarioGenStatus');
+            var statusText = document.getElementById('scenarioGenStatusText');
+            statusText.textContent = 'Prompts generated using templates (no AI). Add Gemini API key in settings for better results.';
+            statusEl.style.display = '';
+            statusEl.style.background = 'var(--warning-bg, #fff3cd)';
+            setTimeout(function() { statusEl.style.display = 'none'; statusEl.style.background = ''; }, 8000);
+        }
+
+    } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+        document.getElementById('scenarioGenStatus').style.display = 'none';
+    } finally {
+        isSubmitting = false;
+        genBtn.disabled = false;
+    }
+}
+
+function approveScenario() {
+    var wf = wizState.scenarioWorkflow;
+    var cfg = wf.configs[wf.activeIdx];
+    if (!cfg) return;
+
+    // Warn if nothing selected
+    if (!cfg.selectedSet || cfg.selectedSet.size === 0) {
+        showToast('Select at least one prompt before confirming.', 'warning');
+        return;
+    }
+
+    cfg.approved = true;
+    cfg.status = 'approved';
+    showToast('Scenario confirmed — ' + cfg.selectedSet.size + ' prompts selected.', 'success');
+    renderScenarioList();
+
+    // Auto-select next unapproved scenario if any
+    var nextIdx = -1;
+    for (var i = 0; i < wf.configs.length; i++) {
+        if (i !== wf.activeIdx && !wf.configs[i].approved && wf.configs[i].status !== 'skipped') {
+            nextIdx = i;
+            break;
+        }
+    }
+    if (nextIdx >= 0) {
+        selectScenario(nextIdx);
+    }
+}
+
+function skipScenario() {
+    var wf = wizState.scenarioWorkflow;
+    var cfg = wf.configs[wf.activeIdx];
+    if (cfg) {
+        cfg.approved = false;
+        cfg.status = 'skipped';
+        cfg.prompts = [];
+        cfg.selectedSet = new Set();
+    }
+    showToast('Scenario skipped.', 'info');
+    renderScenarioList();
+
+    // Auto-select next unapproved scenario if any
+    var nextIdx = -1;
+    for (var i = 0; i < wf.configs.length; i++) {
+        if (i !== wf.activeIdx && !wf.configs[i].approved && wf.configs[i].status !== 'skipped') {
+            nextIdx = i;
+            break;
+        }
+    }
+    if (nextIdx >= 0) {
+        selectScenario(nextIdx);
+    }
+}
+
+/* ---- Prompt Editor (used inside Phase B) ---- */
+
+function populateFilterDropdowns(cfg) {
+    var subtypes = new Set();
+    cfg.prompts.forEach(function(p) {
+        if (p.query_subtype) subtypes.add(p.query_subtype);
+    });
+
+    var subtypeSelect = document.getElementById('filterSubtype');
+    subtypeSelect.innerHTML = '<option value="">All subtypes</option>';
+    subtypes.forEach(function(s) {
+        subtypeSelect.innerHTML += '<option value="' + s + '">' + s + '</option>';
+    });
+}
+
+function getFilteredPrompts(cfg) {
+    var classFilter = document.getElementById('filterQueryClass').value;
+    var subtypeFilter = document.getElementById('filterSubtype').value;
+    var searchFilter = (document.getElementById('filterSearch').value || '').toLowerCase().trim();
+
+    return cfg.prompts.filter(function(p) {
+        if (classFilter && p.query_class !== classFilter) return false;
+        if (subtypeFilter && p.query_subtype !== subtypeFilter) return false;
+        if (searchFilter && p.user_prompt.toLowerCase().indexOf(searchFilter) === -1) return false;
+        return true;
+    });
+}
+
+function applyPromptFilters() {
+    var wf = wizState.scenarioWorkflow;
+    var cfg = wf.configs[wf.activeIdx];
+    if (cfg) renderPromptEditor(cfg);
+}
+
+function renderPromptEditor(cfg) {
+    var filtered = getFilteredPrompts(cfg);
+    var container = document.getElementById('promptEditorList');
+    var html = '';
+
+    filtered.forEach(function(p) {
+        var isSelected = cfg.selectedSet.has(p.idx);
+        var classColor = p.query_class === 'branded' ? 'branded' : 'thematic';
+
+        html += '<div class="prompt-card ' + (isSelected ? 'prompt-card--selected' : '') + '" data-idx="' + p.idx + '">';
+        html += '<div class="prompt-card-header">';
+        html += '<label class="prompt-checkbox"><input type="checkbox" ' + (isSelected ? 'checked' : '') + ' onchange="togglePromptSelect(' + p.idx + ', this.checked)"><span class="prompt-checkbox-mark"></span></label>';
+        html += '<div class="prompt-badges">';
+        if (p.query_class) html += '<span class="meta-badge meta-badge--' + classColor + '">' + p.query_class + '</span>';
+        if (p.query_subtype) html += '<span class="meta-badge meta-badge--subtype">' + p.query_subtype + '</span>';
+        if (p.persona) html += '<span class="meta-badge persona">' + p.persona + '</span>';
+        html += '</div>';
+        html += '<div class="prompt-card-actions">';
+        html += '<button type="button" class="btn-icon" onclick="startEditPrompt(' + p.idx + ')" title="Edit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>';
+        html += '<button type="button" class="btn-icon btn-icon--danger" onclick="removePrompt(' + p.idx + ')" title="Remove"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>';
+        html += '</div>';
+        html += '</div>';
+
+        if (p.editing) {
+            html += '<div class="prompt-card-body">';
+            html += '<textarea class="prompt-edit-textarea" id="editArea_' + p.idx + '" rows="3">' + escapeHtml(p.user_prompt) + '</textarea>';
+            html += '<div class="prompt-edit-actions">';
+            html += '<button type="button" class="btn btn-ghost btn-xs" onclick="cancelEditPrompt(' + p.idx + ')">Cancel</button>';
+            html += '<button type="button" class="btn btn-primary btn-xs" onclick="saveEditPrompt(' + p.idx + ')">Save</button>';
+            html += '</div>';
+            html += '</div>';
+        } else {
+            html += '<div class="prompt-card-body">';
+            html += '<div class="prompt-text">' + escapeHtml(p.user_prompt) + '</div>';
+            html += '</div>';
+        }
+
+        html += '</div>';
+    });
+
+    if (filtered.length === 0 && cfg.prompts.length > 0) {
+        html = '<div class="prompt-editor-empty">No prompts match filters.</div>';
+    } else if (cfg.prompts.length === 0) {
+        html = '<div class="prompt-editor-empty">No prompts generated yet.</div>';
+    }
+
+    container.innerHTML = html;
+    updatePromptStats(cfg);
+}
+
+function escapeHtml(text) {
+    var div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function updatePromptStats(cfg) {
+    var total = cfg.prompts.length;
+    var selected = cfg.selectedSet.size;
+
+    document.getElementById('promptStatTotal').textContent = total + ' prompts';
+    document.getElementById('promptStatSelected').textContent = selected + ' selected';
+}
+
+function togglePromptSelect(idx, checked) {
+    var wf = wizState.scenarioWorkflow;
+    var cfg = wf.configs[wf.activeIdx];
+    if (!cfg) return;
+
+    if (checked) {
+        cfg.selectedSet.add(idx);
+    } else {
+        cfg.selectedSet.delete(idx);
+    }
+    var card = document.querySelector('.prompt-card[data-idx="' + idx + '"]');
+    if (card) card.classList.toggle('prompt-card--selected', checked);
+    updatePromptStats(cfg);
+}
+
+function selectAllPrompts() {
+    var wf = wizState.scenarioWorkflow;
+    var cfg = wf.configs[wf.activeIdx];
+    if (!cfg) return;
+    cfg.prompts.forEach(function(p) { cfg.selectedSet.add(p.idx); });
+    renderPromptEditor(cfg);
+}
+
+function deselectAllPrompts() {
+    var wf = wizState.scenarioWorkflow;
+    var cfg = wf.configs[wf.activeIdx];
+    if (!cfg) return;
+    cfg.selectedSet.clear();
+    renderPromptEditor(cfg);
+}
+
+function removePrompt(idx) {
+    var wf = wizState.scenarioWorkflow;
+    var cfg = wf.configs[wf.activeIdx];
+    if (!cfg) return;
+    // Build mapping: old index → was selected?
+    var wasSelected = {};
+    cfg.prompts.forEach(function(p) {
+        if (p.idx !== idx) wasSelected[p.idx] = cfg.selectedSet.has(p.idx);
+    });
+    cfg.prompts = cfg.prompts.filter(function(p) { return p.idx !== idx; });
+    // Re-index and rebuild selectedSet
+    var newSelected = new Set();
+    cfg.prompts.forEach(function(p, i) {
+        if (wasSelected[p.idx]) newSelected.add(i);
+        p.idx = i;
+    });
+    cfg.selectedSet = newSelected;
+    renderPromptEditor(cfg);
+}
+
+function startEditPrompt(idx) {
+    var wf = wizState.scenarioWorkflow;
+    var cfg = wf.configs[wf.activeIdx];
+    if (!cfg) return;
+    var p = cfg.prompts.find(function(x) { return x.idx === idx; });
+    if (p) { p.editing = true; renderPromptEditor(cfg); }
+    setTimeout(function() {
+        var ta = document.getElementById('editArea_' + idx);
+        if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+    }, 50);
+}
+
+function cancelEditPrompt(idx) {
+    var wf = wizState.scenarioWorkflow;
+    var cfg = wf.configs[wf.activeIdx];
+    if (!cfg) return;
+    var p = cfg.prompts.find(function(x) { return x.idx === idx; });
+    if (p) { p.editing = false; renderPromptEditor(cfg); }
+}
+
+function saveEditPrompt(idx) {
+    var ta = document.getElementById('editArea_' + idx);
+    if (!ta) return;
+    var newText = ta.value.trim();
+    if (!newText) { showToast('Prompt text cannot be empty', 'warning'); return; }
+    var wf = wizState.scenarioWorkflow;
+    var cfg = wf.configs[wf.activeIdx];
+    if (!cfg) return;
+    var p = cfg.prompts.find(function(x) { return x.idx === idx; });
+    if (p) {
+        p.user_prompt = newText;
+        p.editing = false;
+        renderPromptEditor(cfg);
+        showToast('Prompt updated', 'success');
+    }
+}
+
+function addCustomPrompt() {
+    var input = document.getElementById('addPromptText');
+    var text = (input.value || '').trim();
+    if (!text) { showToast('Enter a prompt text', 'warning'); input.focus(); return; }
+
+    var wf = wizState.scenarioWorkflow;
+    var cfg = wf.configs[wf.activeIdx];
+    if (!cfg) return;
+
+    var queryClass = document.getElementById('addPromptClass').value;
+    var newIdx = cfg.prompts.length;
+    cfg.prompts.push({
+        idx: newIdx,
+        user_prompt: text,
+        query_class: queryClass,
+        query_subtype: 'custom',
+        persona: '',
+        intent: '',
+        category: cfg.name,
+        measurement_type: '',
+        target_llm: '',
+        editing: false
+    });
+    cfg.selectedSet.add(newIdx);
+    input.value = '';
+    renderPromptEditor(cfg);
+    showToast('Custom prompt added', 'success');
+
+    var list = document.getElementById('promptEditorList');
+    list.scrollTop = list.scrollHeight;
+}
+
+/* ---- Step 4: Approved Summary ---- */
+
+function renderApprovedSummary() {
+    var container = document.getElementById('approvedSummary');
+    var wf = wizState.scenarioWorkflow;
+    var html = '';
+    var totalPrompts = 0;
+
+    wf.configs.forEach(function(cfg) {
+        var selectedCount = cfg.selectedSet.size;
+        totalPrompts += selectedCount;
+        var status = cfg.approved ? 'approved' : (cfg.prompts.length > 0 ? 'partial' : 'skipped');
+        var statusLabel = cfg.approved ? '&#10003; ' + selectedCount + ' prompts' : (cfg.prompts.length > 0 ? selectedCount + ' prompts' : 'Skipped');
+        var statusClass = cfg.approved ? 'summary-approved' : (cfg.prompts.length > 0 ? 'summary-partial' : 'summary-skipped');
+
+        html += '<div class="approved-scenario-row ' + statusClass + '">';
+        html += '<span class="approved-scenario-name">' + escapeHtml(cfg.name) + '</span>';
+        html += '<span class="approved-scenario-status">' + statusLabel + '</span>';
+        html += '</div>';
+    });
+
+    if (totalPrompts === 0) {
+        html += '<div class="field-hint" style="margin-top:8px;">No prompts generated yet. Go back to Step 3 to generate prompts.</div>';
+    } else {
+        html += '<div class="approved-total">Total: ' + totalPrompts + ' prompts across ' + wf.configs.filter(function(c) { return c.selectedSet.size > 0; }).length + ' scenarios</div>';
+    }
+
+    // Sub-brands summary
+    if (wizState.subBrands.length > 0) {
+        html += '<div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border)">';
+        html += '<div style="font-weight:600; font-size:0.85rem; margin-bottom:4px;">Brand Sub-Brands (' + wizState.subBrands.length + ')</div>';
+        wizState.subBrands.forEach(function(sb) {
+            html += '<span class="chip chip-sm" style="margin:2px">' + escapeHtml(sb.name);
+            if (sb.aliases.length > 0) html += ' <small style="opacity:0.6">(' + sb.aliases.join(', ') + ')</small>';
+            html += '</span>';
+        });
+        html += '</div>';
+    }
+
+    // Competitor sub-brands summary
+    var hasCompSubs = Object.keys(wizState.competitorSubBrands).some(function(k) {
+        return wizState.competitorSubBrands[k].length > 0;
+    });
+    if (hasCompSubs) {
+        html += '<div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border)">';
+        html += '<div style="font-weight:600; font-size:0.85rem; margin-bottom:4px;">Competitor Sub-Brands</div>';
+        Object.keys(wizState.competitorSubBrands).forEach(function(comp) {
+            var subs = wizState.competitorSubBrands[comp];
+            if (subs.length === 0) return;
+            html += '<div style="margin-bottom:4px"><strong>' + escapeHtml(comp) + ':</strong> ';
+            subs.forEach(function(sb) {
+                html += '<span class="chip chip-sm" style="margin:2px">' + escapeHtml(sb.name) + '</span>';
+            });
+            html += '</div>';
+        });
+        html += '</div>';
+    }
+
+    container.innerHTML = html;
+}
+
+/* ---- Save: Create project + save all approved prompts ---- */
+
+async function wizardSave() {
+    // Flush active scenario description from textarea to config
+    saveActiveScenarioState();
+
+    // Validate
+    if (wizState.targetLlms.length === 0) {
+        showToast('Select at least one LLM provider', 'warning');
+        return;
+    }
+
+    // Collect all selected prompts across scenarios
+    var allPrompts = [];
+    wizState.scenarioWorkflow.configs.forEach(function(cfg) {
+        cfg.prompts.forEach(function(p) {
+            if (cfg.selectedSet.has(p.idx)) {
+                allPrompts.push(p);
+            }
+        });
+    });
+
+    if (allPrompts.length === 0) {
+        showToast('No prompts to save. Go back to Step 3 and generate prompts.', 'warning');
+        return;
+    }
+
+    if (isSubmitting) return;
+    isSubmitting = true;
+
+    var saveBtn = document.getElementById('wizSaveBtn');
+    saveBtn.disabled = true;
+    saveBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></path></svg> Saving...';
+
+    try {
+        // 1. Create project if not yet created
+        if (!wizState.projectId) {
+            // Convert sub-brands to backend format
+            var subBrandsDict = {};
+            wizState.subBrands.forEach(function(sb) { subBrandsDict[sb.name] = sb.aliases; });
+            var compSubBrandsDict = {};
+            Object.keys(wizState.competitorSubBrands).forEach(function(comp) {
+                compSubBrandsDict[comp] = {};
+                (wizState.competitorSubBrands[comp] || []).forEach(function(sb) {
+                    compSubBrandsDict[comp][sb.name] = sb.aliases;
+                });
+            });
+
+            var projResp = await apiFetch('/api/v1/onboarding/create-project', {
+                method: 'POST',
+                body: JSON.stringify({
+                    domain: wizState.domain || null,
+                    brand_name: wizState.brand,
+                    brand_description: wizState.brandDescription,
+                    brand_aliases: wizState.aliases,
+                    competitors: wizState.competitors,
+                    categories: wizState.scenarioWorkflow.configs.map(function(c) { return {name: c.name, description: c.description || ''}; }),
+                    market: wizState.market,
+                    geo: wizState.geo,
+                    personas: ['beginner', 'skeptic'],
+                    golden_facts: wizState.goldenFacts,
+                    target_llms: wizState.targetLlms,
+                    intents: wizState.intents,
+                    enable_expansion: true,
+                    brand_sub_brands: subBrandsDict,
+                    competitor_sub_brands: compSubBrandsDict
+                })
+            });
+
+            if (!projResp || !projResp.ok) {
+                var errData = projResp ? (await projResp.json().catch(function() { return {}; })) : {};
+                var errMsg = 'Error creating project';
+                if (errData.detail) {
+                    errMsg = typeof errData.detail === 'string' ? errData.detail : JSON.stringify(errData.detail).substring(0, 300);
+                }
+                console.error('create-project error:', errData);
+                showToast(errMsg, 'error');
+                return;
+            }
+
+            var projData = await projResp.json();
+            wizState.projectId = projData.project_id;
+        }
+
+        // 2. Save prompts
+        var payload = {
+            brand: wizState.brand,
+            competitors: wizState.competitors,
+            prompts: allPrompts.map(function(p) {
+                return {
+                    user_prompt: p.user_prompt,
+                    query_class: p.query_class,
+                    query_subtype: p.query_subtype,
+                    persona: p.persona,
+                    intent: p.intent,
+                    category: p.category,
+                    measurement_type: p.measurement_type
+                };
+            })
+        };
+
+        var resp = await apiFetch('/api/v1/prompt-engine/save/' + wizState.projectId, {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+
+        if (!resp || !resp.ok) {
+            var errData2 = resp ? (await resp.json().catch(function() { return {}; })) : {};
+            showToast(errData2.detail || 'Error saving prompts', 'error');
+            return;
+        }
+
+        var data = await resp.json();
+        showToast('Saved! ' + data.saved.created + ' prompts created.', 'success');
+
+        // Redirect to LLM dashboard
+        setTimeout(function() {
+            window.location.href = '/project/' + wizState.projectId + '/llm-dashboard';
+        }, 800);
+
+    } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+    } finally {
+        isSubmitting = false;
+        saveBtn.disabled = false;
+        saveBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> Save &amp; Launch';
+    }
+}
+
+/* ---- Initialize ---- */
+
+document.addEventListener('DOMContentLoaded', function() {
+    initChipInput('aliasInput', 'aliasChips', 'aliases', 20);
+    initChipInput('compInput', 'compChips', 'competitors', 10);
+    initScenarioInput();
+    initChipInput('factInput', 'factChips', 'goldenFacts', 50);
+    updateCounts();
+
+    // Sub-brand name input: Enter to add
+    var sbNameInput = document.getElementById('subBrandNameInput');
+    if (sbNameInput) {
+        sbNameInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') { e.preventDefault(); addSubBrand(); }
+        });
+    }
+});
+</script>
+
+<style>
+/* V4 Scenario iterative workflow */
+.scenario-add-input-row {
+    display: flex;
+    gap: 8px;
+}
+.scenario-add-input-row .form-input {
+    flex: 1;
+}
+/* Scenario list cards (Zone 2) */
+.scenario-list-cards {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+.scenario-list-card {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--surface);
+    border: 2px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    font-size: 0.9rem;
+}
+.scenario-list-card:hover {
+    border-color: var(--text-muted);
+}
+.scenario-list-card.active {
+    border-color: var(--accent);
+    background: rgba(99, 102, 241, 0.08);
+}
+.sl-card-name {
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 200px;
+}
+.sl-card-remove {
+    background: none;
+    border: none;
+    font-size: 1.1rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0 2px;
+    line-height: 1;
+    opacity: 0.5;
+    transition: opacity 0.15s;
+}
+.sl-card-remove:hover {
+    color: var(--error, #ef4444);
+    opacity: 1;
+}
+/* Status badges */
+.sl-badge {
+    font-size: 0.75rem;
+    line-height: 1;
+}
+.sl-badge--new { color: var(--text-muted); }
+.sl-badge--editing { color: #f59e0b; }
+.sl-badge--generating { color: var(--accent); }
+.sl-badge--reviewing { color: #3b82f6; }
+.sl-badge--approved { color: #10b981; font-weight: 700; }
+.sl-badge--skipped { color: var(--text-muted); }
+/* Active scenario editor (Zone 3) */
+.active-scenario-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 8px;
+    margin-bottom: 12px;
+}
+.btn-danger-text {
+    color: var(--error, #ef4444) !important;
+}
+.scenario-config-title {
+    font-size: 1.3rem;
+    margin: 0;
+}
+.scenario-actions-bar {
+    display: flex;
+    gap: 12px;
+    margin: 16px 0;
+}
+.scenario-approve-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 16px 0;
+    border-top: 1px solid var(--border);
+    margin-top: 16px;
+}
+/* Empty state (Zone 4) */
+.scenario-empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-muted);
+    font-size: 0.95rem;
+}
+.scenario-card-remove {
+    background: none;
+    border: none;
+    font-size: 1.3rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+}
+.scenario-card-remove:hover {
+    color: var(--error, #ef4444);
+}
+/* Approved summary */
+.approved-summary {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+}
+.approved-scenario-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+}
+.approved-scenario-row:last-of-type {
+    border-bottom: none;
+}
+.approved-scenario-name {
+    font-weight: 500;
+}
+.approved-scenario-status {
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+.summary-approved .approved-scenario-status {
+    color: var(--success, #10b981);
+}
+.summary-skipped .approved-scenario-status {
+    color: var(--text-muted);
+}
+.approved-total {
+    padding-top: 12px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--accent);
+}
+/* Sub-brand cards */
+.sub-brand-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.sub-brand-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+.sub-brand-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+.sub-brand-card-name {
+    font-weight: 600;
+    font-size: 0.95rem;
+}
+.sub-brand-card-aliases {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+}
+.chip-sm {
+    font-size: 0.8rem;
+    padding: 2px 8px;
+}
+.sub-brand-alias-input {
+    border: 1px dashed var(--border);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 0.8rem;
+    width: 100px;
+    background: transparent;
+    color: var(--text);
+    outline: none;
+}
+.sub-brand-alias-input:focus {
+    border-color: var(--accent);
+}
+.sub-brand-add-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.sub-brand-add-row .form-input {
+    flex: 1;
+    min-width: 0;
+}
+/* Competitor sub-brands accordion */
+.competitor-accordion {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 8px;
+    overflow: hidden;
+}
+.competitor-accordion-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: var(--surface);
+    cursor: pointer;
+    font-weight: 500;
+    user-select: none;
+}
+.competitor-accordion-header:hover {
+    background: var(--hover, rgba(255,255,255,0.05));
+}
+.accordion-arrow {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    transition: transform 0.15s;
+}
+.competitor-accordion-body {
+    padding: 10px 14px;
+    border-top: 1px solid var(--border);
+}
+</style>
+{% endblock %}

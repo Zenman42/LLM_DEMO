@@ -1,0 +1,873 @@
+{% extends "base.html" %}
+
+{% block title %}LLM Debug Console — LLM Tracker{% endblock %}
+{% block page_title %}LLM Debug Console{% endblock %}
+
+{% block content %}
+<div id="debugApp">
+    <div class="empty-state"><p>Loading...</p></div>
+</div>
+
+<!-- Snapshot Inspector Modal -->
+<div id="inspectorModal" class="serp-modal-overlay" style="display:none;" onclick="if(event.target===this)closeInspector()">
+    <div class="serp-modal" style="max-width:960px;">
+        <div class="serp-modal-header">
+            <h3 id="inspectorModalTitle">Response Inspector</h3>
+            <button class="serp-modal-close" onclick="closeInspector()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div class="serp-modal-body" id="inspectorModalBody">
+            <p class="muted">Loading...</p>
+        </div>
+    </div>
+</div>
+
+<!-- Pipeline Trace Modal -->
+<div id="traceModal" class="serp-modal-overlay" style="display:none;" onclick="if(event.target===this)closeTraceModal()">
+    <div class="serp-modal trace-modal">
+        <div class="serp-modal-header">
+            <h3 id="traceModalTitle">Pipeline Trace</h3>
+            <button class="serp-modal-close" onclick="closeTraceModal()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div class="serp-modal-body" id="traceModalBody" style="padding:1.25rem;">
+            <p class="muted">Loading...</p>
+        </div>
+    </div>
+</div>
+
+<script>
+const PROJECT_ID = {{ project_id }};
+
+let debugData = null;
+let selectedDays = 30;
+let sortCol = null;
+let sortDir = 'asc';
+let filterProvider = '';
+let filterQueryType = '';
+
+/* ---- Glossary: tooltips for every metric term ---- */
+const GLOSSARY = {
+    RVS: 'Response Visibility Score — оценка видимости бренда в одном ответе LLM. Формула: Presence × Position_Weight × Sentiment_Multiplier. Диапазон: 0–1.2',
+    AIVS: 'AI Visibility Score — агрегированная оценка видимости бренда по всем ответам LLM. Учитывает RVS каждого ответа и тип запроса. Диапазон: 0–100',
+    SoM: 'Share of Model — доля упоминаний вашего бренда среди всех упоминаний брендов (ваш + конкуренты). Диапазон: 0–100%',
+    Resilience: 'Resilience Score — стабильность упоминаний бренда при повторных запросах к одному провайдеру. 1.0 = упоминается всегда, 0 = никогда',
+    MentionRate: 'Mention Rate — доля ответов LLM, в которых бренд был упомянут хотя бы раз. Диапазон: 0–100%',
+    IntentWeight: 'Intent Weight — вес типа запроса в формуле AIVS. comparison=1.5, recommendation=1.2, brand_check=1.0, custom=0.8',
+    Contribution: 'Contribution = RVS × Intent Weight — вклад одного снапшота в итоговый AIVS',
+    PositionWeight: 'Position Weight — вес позиции бренда в ответе. В нумерованном списке: rank 1→1.0, rank 5→0.6, rank 10+→0.1. В маркированном: 0.8. В тексте: по близости к началу',
+    SentimentMult: 'Sentiment Multiplier — множитель тональности упоминания. positive→1.2, neutral→1.0, mixed→0.8, negative→0.5',
+    SoMLocal: 'Share of Model Local — доля бренда в одном ответе = 1 / количество упомянутых брендов',
+    Presence: 'Presence — бинарный индикатор: 1.0 если бренд упомянут, 0.0 если нет',
+    MentionType: 'Mention Type — тип упоминания бренда: recommended (рекомендован), direct (прямое упоминание), compared (в сравнении), negative (негативное), none (не упомянут)',
+};
+
+function tip(key, label) {
+    const text = GLOSSARY[key] || key;
+    return `<span class="term-tip" data-tip="${escHtml(text)}">${label || key}<svg class="term-tip__icon" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.2"/><text x="8" y="12" text-anchor="middle" font-size="11" font-weight="700">?</text></svg></span>`;
+}
+
+/* ---- API helper (wraps base.html apiFetch → returns parsed JSON) ---- */
+async function apiFetchJson(url) {
+    var resp = await apiFetch(url);       // from base.html — returns Response
+    if (!resp || !resp.ok) throw new Error('HTTP ' + (resp ? resp.status : 'null'));
+    return resp.json();
+}
+
+/* ---- Load data ---- */
+async function loadDebugData() {
+    // Wait for role to be loaded, redirect non-admin
+    await waitForRole();
+    if (!isAdmin()) {
+        window.location.href = '/project/' + PROJECT_ID + '/llm-dashboard';
+        return;
+    }
+
+    try {
+        debugData = await apiFetchJson('/api/v1/llm/debug/' + PROJECT_ID + '?days=' + selectedDays);
+        render();
+    } catch (e) {
+        document.getElementById('debugApp').innerHTML =
+            '<div class="empty-state"><p>Error loading debug data: ' + e.message + '</p></div>';
+    }
+}
+
+/* ---- Render ---- */
+function render() {
+    if (!debugData) return;
+    const d = debugData;
+
+    // Add debug-page class for full-width layout
+    document.querySelector('.main-content').classList.add('debug-page');
+
+    const html = `
+        <div class="debug-header">
+            <div>
+                <h1>Debug Console</h1>
+                <span class="text-secondary text-sm">${d.snapshot_count} snapshots, ${d.days} days</span>
+            </div>
+            <div class="debug-header__links">
+                <a href="/project/${PROJECT_ID}/llm-dashboard" class="debug-link">&larr; Dashboard</a>
+                <select onchange="selectedDays=+this.value;loadDebugData()" style="padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--bg-primary);color:var(--text-primary);font-size:0.78rem;">
+                    <option value="1" ${selectedDays===1?'selected':''}>1 day</option>
+                    <option value="7" ${selectedDays===7?'selected':''}>7 days</option>
+                    <option value="30" ${selectedDays===30?'selected':''}>30 days</option>
+                    <option value="90" ${selectedDays===90?'selected':''}>90 days</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Metric Calculator Cards — 2×2 grid -->
+        <div class="debug-metrics-grid">
+            ${renderAivsCard(d.aivs_debug)}
+            ${renderSomCard(d.som_debug)}
+            ${renderResilienceCard(d.resilience_debug)}
+            ${renderMentionRateCard(d.mention_rate_debug)}
+        </div>
+
+        <!-- Snapshot Table -->
+        <div class="debug-metric-card">
+            <div class="debug-metric-card__header">
+                <span class="debug-metric-card__title">All Snapshots (${d.snapshot_count})</span>
+                <div class="debug-filters">
+                    <select onchange="filterProvider=this.value;render()">
+                        <option value="">All Providers</option>
+                        ${getProviders(d.snapshots).map(p => `<option value="${p}" ${filterProvider===p?'selected':''}>${p}</option>`).join('')}
+                    </select>
+                    <select onchange="filterQueryType=this.value;render()">
+                        <option value="">All Types</option>
+                        ${getQueryTypes(d.snapshots).map(t => `<option value="${t}" ${filterQueryType===t?'selected':''}>${t}</option>`).join('')}
+                    </select>
+                </div>
+            </div>
+            ${renderSnapshotTable(d.snapshots)}
+        </div>
+    `;
+    document.getElementById('debugApp').innerHTML = html;
+}
+
+/* ---- AIVS Card ---- */
+function renderAivsCard(a) {
+    return `
+    <div class="debug-metric-card debug-metric-card--aivs">
+        <div class="debug-metric-card__header">
+            <span class="debug-metric-card__title">${tip('AIVS', 'AIVS')} (AI Visibility Score)</span>
+            <span class="debug-metric-card__value">${a.final_score}</span>
+        </div>
+        <div class="debug-formula">${escHtml(a.formula)}</div>
+        <div class="debug-ref-table">
+            <div class="debug-ref-group">
+                <h4>${tip('RVS', 'RVS Lookup')}</h4>
+                <table>
+                    <tr><td>${tip('MentionType', 'recommended')}</td><td>1.20</td></tr>
+                    <tr><td>direct</td><td>0.70</td></tr>
+                    <tr><td>compared</td><td>0.50</td></tr>
+                    <tr><td>negative</td><td>0.35</td></tr>
+                    <tr><td>none</td><td>0.00</td></tr>
+                </table>
+            </div>
+            <div class="debug-ref-group">
+                <h4>${tip('IntentWeight', 'Intent Weights')}</h4>
+                <table>
+                    <tr><td>comparison</td><td>1.5</td></tr>
+                    <tr><td>recommendation</td><td>1.2</td></tr>
+                    <tr><td>brand_check</td><td>1.0</td></tr>
+                    <tr><td>custom</td><td>0.8</td></tr>
+                </table>
+            </div>
+        </div>
+        <button class="debug-details-toggle" onclick="toggleDetails(this)">Show per-snapshot breakdown (${a.per_snapshot.length})</button>
+        <div class="debug-details-content">
+            <div class="table-wrapper">
+                <table class="debug-snapshot-table">
+                    <thead><tr>
+                        <th>ID</th><th>Query</th><th>Provider</th><th>Mentioned</th>
+                        <th>${tip('MentionType', 'MentionType')}</th><th>${tip('RVS', 'RVS')}</th><th>${tip('IntentWeight', 'IntentW')}</th><th>${tip('Contribution', 'Contribution')}</th><th></th>
+                    </tr></thead>
+                    <tbody>
+                        ${a.per_snapshot.map(s => `<tr>
+                            <td class="col-num" style="color:var(--text-secondary);font-size:0.75rem;">#${s.id}</td>
+                            <td title="${escHtml(s.query_text)}">${truncate(s.query_text, 40)}</td>
+                            <td>${providerPill(s.provider)}</td>
+                            <td>${s.brand_mentioned ? '<span class="match-ok">YES</span>' : '<span class="match-no">NO</span>'}</td>
+                            <td>${mentionBadge(s.mention_type)}</td>
+                            <td class="col-num" title="${escHtml(s.rvs_source)}">${s.rvs}</td>
+                            <td class="col-num" title="${escHtml(s.intent_source)}">${s.intent_weight}</td>
+                            <td class="col-num">${s.contribution}</td>
+                            <td><button class="btn-trace" onclick="openTrace(${s.id})" title="Pipeline Trace">Trace</button></td>
+                        </tr>`).join('')}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>`;
+}
+
+/* ---- SoM Card ---- */
+function renderSomCard(s) {
+    const compRows = Object.entries(s.per_competitor).map(([name, cnt]) =>
+        `<tr><td>${escHtml(name)}</td><td class="col-num">${cnt}</td></tr>`
+    ).join('');
+    return `
+    <div class="debug-metric-card debug-metric-card--som">
+        <div class="debug-metric-card__header">
+            <span class="debug-metric-card__title">${tip('SoM', 'Share of Model')}</span>
+            <span class="debug-metric-card__value">${s.final_score}%</span>
+        </div>
+        <div class="debug-formula">${escHtml(s.formula)}</div>
+        <div style="display:flex;gap:2rem;font-size:0.85rem;color:var(--text-secondary);">
+            <span>Brand mentions: <strong style="color:var(--text-primary)">${s.brand_count}</strong></span>
+            <span>Total mentions: <strong style="color:var(--text-primary)">${s.total_mentions}</strong></span>
+        </div>
+        ${compRows ? `
+        <button class="debug-details-toggle" style="margin-top:0.75rem" onclick="toggleDetails(this)">Show competitor breakdown</button>
+        <div class="debug-details-content">
+            <table class="debug-snapshot-table" style="max-width:300px;">
+                <thead><tr><th>Competitor</th><th>Mentions</th></tr></thead>
+                <tbody>${compRows}</tbody>
+            </table>
+        </div>` : ''}
+    </div>`;
+}
+
+/* ---- Resilience Card ---- */
+function renderResilienceCard(r) {
+    return `
+    <div class="debug-metric-card debug-metric-card--resilience">
+        <div class="debug-metric-card__header">
+            <span class="debug-metric-card__title">${tip('Resilience', 'Resilience Score')}</span>
+            <span class="debug-metric-card__value">${r.final_score}</span>
+        </div>
+        <div class="debug-formula">${escHtml(r.formula)}</div>
+        <button class="debug-details-toggle" onclick="toggleDetails(this)">Show ${r.groups.length} groups</button>
+        <div class="debug-details-content">
+            <div class="table-wrapper">
+                <table class="debug-snapshot-table">
+                    <thead><tr>
+                        <th>Query</th><th>Provider</th><th>Total</th>
+                        <th>Mentioned</th><th>Resilience</th>
+                    </tr></thead>
+                    <tbody>
+                        ${r.groups.map(g => `<tr>
+                            <td title="${escHtml(g.query_text)}">${truncate(g.query_text, 40)}</td>
+                            <td>${providerPill(g.provider)}</td>
+                            <td class="col-num">${g.total}</td>
+                            <td class="col-num">${g.mentioned}</td>
+                            <td class="col-num">${g.resilience}</td>
+                        </tr>`).join('')}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>`;
+}
+
+/* ---- Mention Rate Card ---- */
+function renderMentionRateCard(m) {
+    const hasOrganic = m.organic_total > 0;
+    const hasPrompted = m.prompted_total > 0;
+
+    return `
+    <div class="debug-metric-card debug-metric-card--mention">
+        <div class="debug-metric-card__header">
+            <span class="debug-metric-card__title">${tip('MentionRate', 'Mention Rate')}</span>
+            <span class="debug-metric-card__value">${(m.final_rate * 100).toFixed(1)}%</span>
+        </div>
+        <div class="debug-formula">${escHtml(m.formula)}</div>
+
+        <!-- Organic vs Prompted split -->
+        <div class="mention-rate-split">
+            ${hasOrganic ? `
+            <div class="mention-rate-segment mention-rate-segment--organic">
+                <div class="mention-rate-segment__header">
+                    <span class="mention-rate-segment__icon">🎯</span>
+                    <span class="mention-rate-segment__title">Organic</span>
+                    <span class="mention-rate-segment__badge">${(m.organic_rate * 100).toFixed(1)}%</span>
+                </div>
+                <div class="mention-rate-segment__desc">Бренд НЕ в промпте — чистая проверка видимости</div>
+                <div class="mention-rate-segment__formula">${escHtml(m.organic_formula)}</div>
+                <div class="mention-rate-segment__stats">${m.organic_mentions} из ${m.organic_total} ответов</div>
+            </div>` : ''}
+
+            ${hasPrompted ? `
+            <div class="mention-rate-segment mention-rate-segment--prompted">
+                <div class="mention-rate-segment__header">
+                    <span class="mention-rate-segment__icon">📌</span>
+                    <span class="mention-rate-segment__title">Prompted</span>
+                    <span class="mention-rate-segment__badge mention-rate-segment__badge--muted">${(m.prompted_rate * 100).toFixed(1)}%</span>
+                </div>
+                <div class="mention-rate-segment__desc">Бренд УЖЕ в промпте — LLM обязан упомянуть</div>
+                <div class="mention-rate-segment__formula">${escHtml(m.prompted_formula)}</div>
+                <div class="mention-rate-segment__stats">${m.prompted_mentions} из ${m.prompted_total} ответов</div>
+            </div>` : ''}
+        </div>
+
+        ${hasOrganic && hasPrompted ? `
+        <div style="margin-top:0.6rem;font-size:0.72rem;padding:0.4rem 0.6rem;background:rgba(251,191,36,0.06);border:1px solid rgba(251,191,36,0.15);border-radius:6px;color:var(--text-secondary);">
+            ⚠️ Для оценки реальной видимости бренда используйте <strong style="color:var(--text-primary)">Organic Rate (${(m.organic_rate * 100).toFixed(1)}%)</strong>.
+            Prompted-запросы искусственно завышают Mention Rate, т.к. бренд уже подставлен в текст промпта.
+        </div>` : ''}
+    </div>`;
+}
+
+/* ---- Snapshot Table ---- */
+function renderSnapshotTable(snapshots) {
+    let rows = [...snapshots];
+
+    // Filter
+    if (filterProvider) rows = rows.filter(s => s.provider === filterProvider);
+    if (filterQueryType) rows = rows.filter(s => s.query_type === filterQueryType);
+
+    // Sort
+    if (sortCol) {
+        rows.sort((a, b) => {
+            let va = a[sortCol], vb = b[sortCol];
+            if (typeof va === 'string') va = va.toLowerCase();
+            if (typeof vb === 'string') vb = vb.toLowerCase();
+            if (typeof va === 'boolean') { va = va ? 1 : 0; vb = vb ? 1 : 0; }
+            if (va < vb) return sortDir === 'asc' ? -1 : 1;
+            if (va > vb) return sortDir === 'asc' ? 1 : -1;
+            return 0;
+        });
+    }
+
+    const th = (label, col, glossaryKey) => {
+        let cls = 'sortable-th';
+        if (sortCol === col) cls += sortDir === 'asc' ? ' sort-asc' : ' sort-desc';
+        const content = glossaryKey ? tip(glossaryKey, label) : label;
+        return `<th class="${cls}" onclick="sortTable('${col}')">${content}</th>`;
+    };
+
+    return `
+    <div class="table-wrapper">
+        <table class="debug-snapshot-table">
+            <thead><tr>
+                ${th('ID', 'id')}
+                ${th('Date', 'date')}
+                ${th('Query', 'query_text')}
+                ${th('Type', 'query_type')}
+                ${th('Provider', 'provider')}
+                ${th('Model', 'model')}
+                ${th('Mentioned', 'brand_mentioned')}
+                ${th('MentionType', 'mention_type', 'MentionType')}
+                ${th('RVS', 'rvs', 'RVS')}
+                ${th('IntentW', 'intent_weight', 'IntentWeight')}
+                ${th('Contribution', 'contribution', 'Contribution')}
+                ${th('Cost', 'cost')}
+                <th>Actions</th>
+            </tr></thead>
+            <tbody>
+                ${rows.map(s => `<tr onclick="openInspector(${s.id})" style="cursor:pointer;">
+                    <td class="col-num" style="color:var(--text-secondary);font-size:0.75rem;">#${s.id}</td>
+                    <td>${s.date}</td>
+                    <td title="${escHtml(s.query_text)}${s.brand_in_prompt ? '\n📌 Brand is in the prompt' : ''}">${s.brand_in_prompt ? '<span class="bip-tag" title="Brand in prompt">📌</span>' : ''}${truncate(s.query_text, 35)}</td>
+                    <td><code>${s.query_type}</code></td>
+                    <td>${providerPill(s.provider)}</td>
+                    <td title="${escHtml(s.model)}"><code>${truncate(s.model, 18)}</code></td>
+                    <td>${s.brand_mentioned ? '<span class="match-ok">YES</span>' : '<span class="match-no">NO</span>'}</td>
+                    <td>${mentionBadge(s.mention_type)}</td>
+                    <td class="col-num">${s.rvs}</td>
+                    <td class="col-num">${s.intent_weight}</td>
+                    <td class="col-num">${s.contribution}</td>
+                    <td class="col-num">${s.cost != null ? '$' + s.cost.toFixed(4) : '—'}</td>
+                    <td style="white-space:nowrap;">
+                        <button class="btn-trace" onclick="event.stopPropagation();openInspector(${s.id})" title="Inspect raw response">Inspect</button>
+                        <button class="btn-trace" onclick="event.stopPropagation();openTrace(${s.id})" title="Re-run pipeline trace">Trace</button>
+                    </td>
+                </tr>`).join('')}
+            </tbody>
+        </table>
+    </div>`;
+}
+
+/* ---- Sort ---- */
+function sortTable(col) {
+    if (sortCol === col) {
+        sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+        sortCol = col;
+        sortDir = 'asc';
+    }
+    render();
+}
+
+/* ---- Toggle details ---- */
+function toggleDetails(btn) {
+    const content = btn.nextElementSibling;
+    content.classList.toggle('open');
+    btn.textContent = content.classList.contains('open')
+        ? btn.textContent.replace('Show', 'Hide')
+        : btn.textContent.replace('Hide', 'Show');
+}
+
+/* ---- Pipeline Trace Modal ---- */
+async function openTrace(snapshotId) {
+    document.getElementById('traceModal').style.display = 'flex';
+    document.getElementById('traceModalBody').innerHTML = '<p class="muted">Re-running pipeline...</p>';
+
+    try {
+        const trace = await apiFetchJson('/api/v1/llm/debug/trace/' + snapshotId);
+        document.getElementById('traceModalTitle').textContent =
+            'Pipeline Trace — Snapshot #' + snapshotId + ' (' + trace.provider + ')';
+        document.getElementById('traceModalBody').innerHTML = renderTrace(trace);
+    } catch (e) {
+        document.getElementById('traceModalBody').innerHTML =
+            '<p style="color:var(--danger)">Error: ' + e.message + '</p>';
+    }
+}
+
+function closeTraceModal() {
+    document.getElementById('traceModal').style.display = 'none';
+}
+
+function renderTrace(t) {
+    const s0 = t.step_0_llm_query;
+    const s1 = t.step_1_sanitization;
+    const s2 = t.step_2_entity_resolution;
+    const s3 = t.step_3_structure;
+    const s4 = t.step_4_context;
+    const s5 = t.step_5_citations;
+    const s6 = t.step_6_scoring;
+
+    const stepClass = (ok) => ok ? 'trace-step--pass' : 'trace-step--warn';
+
+    const po = s0.prompt_origin || {};
+    const hasOrigin = po.matched_template && po.match_confidence !== 'none';
+
+    return `
+    <div style="margin-bottom:0.75rem;font-size:0.85rem;color:var(--text-secondary);">
+        Query: <strong style="color:var(--text-primary)">${escHtml(t.query_text)}</strong>
+    </div>
+
+    <div class="trace-timeline">
+        <!-- Step 0: Prompt Generation & LLM Request -->
+        <div class="trace-step trace-step--pass">
+            <div class="trace-step__header">
+                <span class="trace-step__number" style="background:var(--text-secondary);">0</span>
+                <span class="trace-step__title">Prompt Generation → ${escHtml(s0.provider)}</span>
+                <span style="margin-left:auto;font-size:0.72rem;color:var(--text-secondary);"><code>${escHtml(s0.model)}</code></span>
+            </div>
+            <div class="trace-step__body">
+                <!-- 0a: Prompt Origin — how query_text was formed -->
+                ${hasOrigin ? `
+                <div style="background:rgba(99,102,241,0.06);border:1px solid rgba(99,102,241,0.15);border-radius:8px;padding:0.75rem;margin-bottom:0.75rem;">
+                    <div style="font-weight:600;font-size:0.78rem;color:var(--accent);margin-bottom:0.5rem;">📐 Prompt Origin <span style="font-weight:400;color:var(--text-secondary);">(${escHtml(po.match_confidence)} match)</span></div>
+                    <dl>
+                        <dt>Template</dt><dd style="font-family:monospace;font-size:0.78rem;color:#a78bfa;">${escHtml(po.matched_template)}</dd>
+                        <dt>Persona</dt><dd><code>${escHtml(po.persona)}</code></dd>
+                        <dt>Intent</dt><dd><code>${escHtml(po.intent)}</code></dd>
+                    </dl>
+                    <div style="margin-top:0.35rem;font-size:0.72rem;color:var(--text-secondary);">
+                        Template → matrix.py → expansion.py → adapters.py → <strong>${escHtml(s0.provider)}</strong> adapter
+                    </div>
+                </div>` : `
+                <div style="background:rgba(251,191,36,0.06);border:1px solid rgba(251,191,36,0.15);border-radius:8px;padding:0.5rem;margin-bottom:0.75rem;font-size:0.78rem;color:var(--text-secondary);">
+                    ⚠️ Could not match query to a template — may be a custom/manual query
+                </div>`}
+
+                <!-- 0b: Request Parameters -->
+                <dl>
+                    <dt>Provider</dt><dd>${providerPill(s0.provider)}</dd>
+                    <dt>Model</dt><dd><code>${escHtml(s0.model)}</code></dd>
+                    <dt>Temperature</dt><dd>${s0.temperature}</dd>
+                    <dt>Max tokens</dt><dd>${s0.max_tokens}</dd>
+                    <dt>Query type</dt><dd><code>${escHtml(s0.query_type)}</code></dd>
+                    <dt>Target brand</dt><dd>${escHtml(s0.target_brand)}</dd>
+                    <dt>Competitors</dt><dd>${s0.competitors.length > 0 ? s0.competitors.map(escHtml).join(', ') : '—'}</dd>
+                </dl>
+
+                <!-- 0c: System Prompt -->
+                <div class="judge-prompt-block" style="margin-top:0.75rem;">
+                    <div class="judge-prompt-label">System Prompt (sent to ${escHtml(s0.provider)})</div>
+                    <pre class="judge-prompt-content">${escHtml(s0.system_prompt)}</pre>
+                </div>
+
+                <!-- 0d: User Prompt -->
+                <div class="judge-prompt-block" style="margin-top:0.5rem;">
+                    <div class="judge-prompt-label">User Prompt (sent to ${escHtml(s0.provider)})</div>
+                    <pre class="judge-prompt-content">${escHtml(s0.user_prompt)}</pre>
+                </div>
+
+                <!-- 0e: Full API Payload (collapsible) -->
+                ${s0.api_payload && Object.keys(s0.api_payload).length > 0 ? `
+                <div class="judge-details" style="margin-top:0.5rem;">
+                    <button class="debug-details-toggle" onclick="toggleDetails(this)">Show full API payload (JSON)</button>
+                    <div class="debug-details-content">
+                        <div class="judge-prompt-block">
+                            <div class="judge-prompt-label">Request Body → ${escHtml(s0.provider)} API</div>
+                            <pre class="judge-prompt-content judge-response">${escHtml(JSON.stringify(s0.api_payload, null, 2))}</pre>
+                        </div>
+                    </div>
+                </div>` : ''}
+
+                <!-- 0f: Raw LLM Response (collapsible) -->
+                ${t.raw_response ? `
+                <div class="judge-details" style="margin-top:0.5rem;">
+                    <button class="debug-details-toggle" onclick="toggleDetails(this)">Show LLM raw response (${(t.raw_response||'').length} chars)</button>
+                    <div class="debug-details-content">
+                        <div class="judge-prompt-block">
+                            <div class="judge-prompt-label">Raw Response from ${escHtml(s0.provider)} / ${escHtml(s0.model)}</div>
+                            <pre class="judge-prompt-content" style="max-height:400px;overflow-y:auto;">${escHtml(t.raw_response)}</pre>
+                        </div>
+                    </div>
+                </div>` : '<div style="margin-top:0.5rem;font-size:0.78rem;color:var(--text-secondary);">⚠️ No raw response stored for this snapshot</div>'}
+            </div>
+        </div>
+
+        <!-- Step 1: Sanitization -->
+        <div class="trace-step ${s1.flag === 'clean' ? 'trace-step--pass' : 'trace-step--warn'}">
+            <div class="trace-step__header">
+                <span class="trace-step__number">1</span>
+                <span class="trace-step__title">Text Preprocessor & Sanitizer</span>
+            </div>
+            <div class="trace-step__body">
+                <dl>
+                    <dt>Flag</dt><dd><code>${s1.flag}</code></dd>
+                    <dt>Stripped chars</dt><dd>${s1.stripped_chars}</dd>
+                    ${s1.think_content ? `<dt>Think block</dt><dd>${truncate(s1.think_content, 100)}</dd>` : ''}
+                </dl>
+            </div>
+        </div>
+
+        <!-- Step 2: Entity Resolution -->
+        <div class="trace-step ${s2.target_brand.is_mentioned ? 'trace-step--pass' : 'trace-step--fail'}">
+            <div class="trace-step__header">
+                <span class="trace-step__number">2</span>
+                <span class="trace-step__title">NER & Entity Resolution</span>
+            </div>
+            <div class="trace-step__body">
+                <dl>
+                    <dt>Brand</dt><dd>${escHtml(s2.target_brand.name)}</dd>
+                    <dt>Mentioned</dt><dd>${s2.target_brand.is_mentioned ? '<span class="match-ok">YES</span>' : '<span class="match-no">NO</span>'}</dd>
+                    <dt>Mention type</dt><dd>${mentionBadge(s2.target_brand.mention_type)}</dd>
+                    <dt>Position rank</dt><dd>${s2.target_brand.position_rank}</dd>
+                    <dt>Char offset</dt><dd>${s2.target_brand.char_offset}</dd>
+                    <dt>Sentence #</dt><dd>${s2.target_brand.sentence_index}</dd>
+                    ${s2.target_brand.mention_context ? `<dt>Context</dt><dd style="white-space:normal;word-break:break-word;">${truncate(escHtml(s2.target_brand.mention_context), 200)}</dd>` : ''}
+                </dl>
+                ${s2.competitors.length > 0 ? `
+                <div style="margin-top:0.5rem;font-size:0.8rem;">
+                    <strong>Competitors:</strong>
+                    ${s2.competitors.map(c =>
+                        `<span style="margin-left:0.5rem;">${escHtml(c.name)}: ${c.is_mentioned ? '<span class="match-ok">YES</span>' : '<span class="match-no">NO</span>'} (${c.mention_type})</span>`
+                    ).join('')}
+                </div>` : ''}
+            </div>
+        </div>
+
+        <!-- Step 3: Structure -->
+        <div class="trace-step trace-step--pass">
+            <div class="trace-step__header">
+                <span class="trace-step__number">3</span>
+                <span class="trace-step__title">Structural & Ranking Parser</span>
+            </div>
+            <div class="trace-step__body">
+                <dl>
+                    <dt>Structure type</dt><dd><code>${s3.type}</code></dd>
+                    <dt>Total items</dt><dd>${s3.total_items}</dd>
+                    <dt>Brands in list</dt><dd>${s3.brands_in_list.length > 0 ? s3.brands_in_list.map(escHtml).join(', ') : '—'}</dd>
+                </dl>
+            </div>
+        </div>
+
+        <!-- Step 4: Context Evaluator (LLM-as-a-Judge) -->
+        <div class="trace-step ${s4.sentiment_label === 'negative' ? 'trace-step--warn' : 'trace-step--pass'}">
+            <div class="trace-step__header">
+                <span class="trace-step__number">4</span>
+                <span class="trace-step__title">Context Evaluator</span>
+                ${s4.judge_method ? `<span class="judge-method-badge judge-method-badge--${s4.judge_method === 'llm_judge' ? 'llm' : 'heuristic'}">${s4.judge_method === 'llm_judge' ? '🤖 LLM Judge' : '📏 Heuristic'}</span>` : ''}
+            </div>
+            <div class="trace-step__body">
+                <dl>
+                    <dt>Method</dt><dd><code>${s4.judge_method || 'unknown'}</code></dd>
+                    <dt>Mention type</dt><dd>${mentionBadge(s4.mention_type)}</dd>
+                    <dt>Sentiment</dt><dd>${s4.sentiment_label} (${s4.sentiment_score.toFixed(2)})</dd>
+                    <dt>Multiplier</dt><dd>${s4.sentiment_multiplier}</dd>
+                    <dt>Tags</dt><dd>${s4.context_tags.length > 0 ? s4.context_tags.join(', ') : '—'}</dd>
+                    <dt>Recommended</dt><dd>${s4.is_recommended ? '<span class="match-ok">YES</span>' : 'NO'}</dd>
+                    <dt>Hallucination</dt><dd>${s4.is_hallucination ? '<span class="match-no">YES ⚠️</span>' : 'NO'}</dd>
+                </dl>
+
+                ${s4.judge_method === 'llm_judge' ? renderJudgeDetails(s4) : ''}
+                ${s4.judge_method === 'heuristic' && s4.judge_prompt_system ? renderJudgeDetails(s4) : ''}
+            </div>
+        </div>
+
+        <!-- Step 5: Citations -->
+        <div class="trace-step ${s5.length > 0 ? 'trace-step--pass' : 'trace-step--warn'}">
+            <div class="trace-step__header">
+                <span class="trace-step__number">5</span>
+                <span class="trace-step__title">Citation & Grounding Extractor</span>
+            </div>
+            <div class="trace-step__body">
+                ${s5.length > 0 ? `
+                <table class="debug-snapshot-table" style="margin-top:0.25rem;">
+                    <thead><tr><th>URL</th><th>Domain</th><th>Native</th></tr></thead>
+                    <tbody>
+                        ${s5.map(c => `<tr>
+                            <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;" title="${escHtml(c.url)}">${truncate(c.url, 50)}</td>
+                            <td>${escHtml(c.domain)}</td>
+                            <td>${c.is_native ? 'Yes' : 'No'}</td>
+                        </tr>`).join('')}
+                    </tbody>
+                </table>` : '<span class="text-secondary">No citations found</span>'}
+            </div>
+        </div>
+
+        <!-- Step 6: Scoring -->
+        <div class="trace-step ${s6.rvs > 0 ? 'trace-step--pass' : 'trace-step--fail'}">
+            <div class="trace-step__header">
+                <span class="trace-step__number">6</span>
+                <span class="trace-step__title">Micro-Scoring Calculator</span>
+            </div>
+            <div class="trace-step__body">
+                <!-- RVS Result -->
+                <div style="display:flex;align-items:center;gap:1rem;margin-bottom:0.75rem;">
+                    <span style="font-size:0.85rem;color:var(--text-secondary);font-weight:600;">${tip('RVS', 'RVS')}</span>
+                    <span style="font-size:1.3rem;font-weight:700;color:var(--accent);">${s6.rvs}</span>
+                </div>
+
+                <!-- RVS Formula Breakdown -->
+                ${s6.rvs_formula ? `
+                <div class="scoring-formula-block">
+                    <div class="scoring-formula-title">${tip('RVS', 'RVS')} = ${tip('Presence', 'Presence')} × ${tip('PositionWeight', 'Position_Weight')} × ${tip('SentimentMult', 'Sentiment_Multiplier')}</div>
+                    <div class="scoring-formula-code">${escHtml(s6.rvs_formula)}</div>
+                    ${s6.presence > 0 ? `
+                    <div class="scoring-factors">
+                        <div class="scoring-factor">
+                            <div class="scoring-factor__label">${tip('Presence', 'Presence')}</div>
+                            <div class="scoring-factor__value">${s6.presence}</div>
+                            <div class="scoring-factor__hint">Brand ${s6.presence > 0 ? 'mentioned ✓' : 'not mentioned'}</div>
+                        </div>
+                        <div class="scoring-factor__operator">×</div>
+                        <div class="scoring-factor">
+                            <div class="scoring-factor__label">${tip('PositionWeight', 'Position')}</div>
+                            <div class="scoring-factor__value">${s6.position_weight}</div>
+                            <div class="scoring-factor__hint">${escHtml(s6.position_source)}</div>
+                        </div>
+                        <div class="scoring-factor__operator">×</div>
+                        <div class="scoring-factor">
+                            <div class="scoring-factor__label">${tip('SentimentMult', 'Sentiment')}</div>
+                            <div class="scoring-factor__value">${s6.sentiment_multiplier}</div>
+                            <div class="scoring-factor__hint">${escHtml(s6.sentiment_source)}</div>
+                        </div>
+                        <div class="scoring-factor__operator">=</div>
+                        <div class="scoring-factor scoring-factor--result">
+                            <div class="scoring-factor__label">${tip('RVS', 'RVS')}</div>
+                            <div class="scoring-factor__value">${s6.rvs}</div>
+                        </div>
+                    </div>` : ''}
+                </div>` : `
+                <dl>
+                    <dt>${tip('RVS', 'RVS')}</dt><dd>${s6.rvs}</dd>
+                </dl>`}
+
+                <!-- Share of Model (local) -->
+                <div style="margin-top:1rem;padding-top:0.75rem;border-top:1px solid var(--border);">
+                    <div style="display:flex;align-items:center;gap:1rem;margin-bottom:0.5rem;">
+                        <span style="font-size:0.85rem;color:var(--text-secondary);font-weight:600;">${tip('SoMLocal', 'Share of Model (local)')}</span>
+                        <span style="font-size:1.1rem;font-weight:700;color:var(--text-primary);">${(s6.share_of_model_local * 100).toFixed(1)}%</span>
+                    </div>
+                    ${s6.som_formula ? `
+                    <div class="scoring-formula-block">
+                        <div class="scoring-formula-title">${tip('SoMLocal', 'SoM_local')} = 1 / total_mentioned_brands</div>
+                        <div class="scoring-formula-code">${escHtml(s6.som_formula)}</div>
+                        ${s6.total_mentioned_brands > 0 ? `
+                        <div style="font-size:0.78rem;color:var(--text-secondary);margin-top:0.35rem;">
+                            Total brands mentioned: <strong>${s6.total_mentioned_brands}</strong>
+                            ${s6.mentioned_competitors && s6.mentioned_competitors.length > 0
+                                ? ' (competitors: ' + s6.mentioned_competitors.map(escHtml).join(', ') + ')'
+                                : ' (no competitors mentioned)'}
+                        </div>` : ''}
+                    </div>` : ''}
+                </div>
+            </div>
+        </div>
+    </div>`;
+}
+
+/* ---- Judge Details (prompts + response) ---- */
+function renderJudgeDetails(s4) {
+    let html = '<div class="judge-details">';
+    html += '<button class="debug-details-toggle" style="margin-top:0.5rem;" onclick="toggleDetails(this)">Show LLM Judge prompts &amp; response</button>';
+    html += '<div class="debug-details-content">';
+
+    if (s4.judge_prompt_system) {
+        html += '<div class="judge-prompt-block">';
+        html += '<div class="judge-prompt-label">System Prompt</div>';
+        html += '<pre class="judge-prompt-content">' + escHtml(s4.judge_prompt_system) + '</pre>';
+        html += '</div>';
+    }
+
+    if (s4.judge_prompt_user) {
+        html += '<div class="judge-prompt-block">';
+        html += '<div class="judge-prompt-label">User Prompt</div>';
+        html += '<pre class="judge-prompt-content">' + escHtml(s4.judge_prompt_user) + '</pre>';
+        html += '</div>';
+    }
+
+    if (s4.judge_raw_response) {
+        html += '<div class="judge-prompt-block">';
+        html += '<div class="judge-prompt-label">Judge Response (raw JSON)</div>';
+        // Try to pretty-print JSON
+        let formatted = s4.judge_raw_response;
+        try {
+            formatted = JSON.stringify(JSON.parse(s4.judge_raw_response), null, 2);
+        } catch(e) {}
+        html += '<pre class="judge-prompt-content judge-response">' + escHtml(formatted) + '</pre>';
+        html += '</div>';
+    } else if (s4.judge_method === 'heuristic') {
+        html += '<div class="judge-prompt-block">';
+        html += '<div class="judge-prompt-label" style="color:var(--text-secondary);">No LLM response — used heuristic keyword matching instead</div>';
+        html += '</div>';
+    }
+
+    html += '</div></div>';
+    return html;
+}
+
+/* ---- Helpers ---- */
+function escHtml(s) {
+    if (!s) return '';
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function truncate(s, len) {
+    if (!s) return '';
+    return s.length > len ? escHtml(s.substring(0, len)) + '...' : escHtml(s);
+}
+
+function providerPill(name) {
+    return '<span class="provider-pill provider-pill--' + (name||'').toLowerCase() + '">' + escHtml(name) + '</span>';
+}
+
+function mentionBadge(type) {
+    return '<span class="mention-badge mention-badge--' + (type||'none') + '">' + (type||'none') + '</span>';
+}
+
+function getProviders(snapshots) {
+    return [...new Set(snapshots.map(s => s.provider))].sort();
+}
+
+function getQueryTypes(snapshots) {
+    return [...new Set(snapshots.map(s => s.query_type))].sort();
+}
+
+/* ---- Snapshot Inspector Modal ---- */
+async function openInspector(snapshotId) {
+    var modal = document.getElementById('inspectorModal');
+    var body = document.getElementById('inspectorModalBody');
+    modal.style.display = 'flex';
+    body.innerHTML = '<p class="muted">Loading...</p>';
+
+    var snapshot = null;
+    try {
+        snapshot = await apiFetchJson('/api/v1/llm/snapshot/' + snapshotId);
+    } catch (e) {
+        body.innerHTML = '<p style="color:var(--danger)">Error loading snapshot: ' + e.message + '</p>';
+        return;
+    }
+
+    document.getElementById('inspectorModalTitle').textContent =
+        'Snapshot #' + snapshot.id + ' — ' + snapshot.llm_provider + ' / ' + snapshot.date;
+
+    var html = '<div class="response-split">';
+
+    // Left: metadata
+    html += '<div class="response-meta"><dl>';
+    html += '<dt>Query</dt><dd>' + escHtml(snapshot.query_text || '') + '</dd>';
+    html += '<dt>Provider</dt><dd>' + providerPill(snapshot.llm_provider) + '</dd>';
+    html += '<dt>Model</dt><dd>' + escHtml(snapshot.llm_model || '-') + '</dd>';
+    html += '<dt>Date</dt><dd>' + snapshot.date + '</dd>';
+    html += '<dt>Brand Mentioned</dt><dd>' + (snapshot.brand_mentioned ? '<span class="match-ok">YES</span>' : '<span class="match-no">NO</span>') + '</dd>';
+    html += '<dt>Mention Type</dt><dd>' + mentionBadge(snapshot.mention_type) + '</dd>';
+
+    if (snapshot.mention_context) {
+        html += '<dt>Context</dt><dd style="font-size:0.8rem;font-style:italic;color:var(--text-secondary);">"' + escHtml(snapshot.mention_context) + '"</dd>';
+    }
+
+    if (snapshot.competitor_mentions) {
+        html += '<dt>Competitors</dt><dd>';
+        for (var comp in snapshot.competitor_mentions) {
+            var m = snapshot.competitor_mentions[comp];
+            html += '<div>' + escHtml(comp) + ': ' + (m ? '<span style="color:#fbbf24;">mentioned</span>' : '<span style="color:#64748b;">not found</span>') + '</div>';
+        }
+        html += '</dd>';
+    }
+
+    if (snapshot.cited_urls && snapshot.cited_urls.length) {
+        html += '<dt>Cited URLs</dt><dd>';
+        snapshot.cited_urls.forEach(function(u) {
+            html += '<div style="margin-bottom:2px;"><a href="' + escHtml(u) + '" target="_blank" style="color:var(--accent);font-size:0.78rem;word-break:break-all;">' + escHtml(u) + '</a></div>';
+        });
+        html += '</dd>';
+    }
+
+    html += '<dt>Tokens</dt><dd>' + (snapshot.response_tokens || '-') + '</dd>';
+    html += '<dt>Cost</dt><dd>$' + (snapshot.cost_usd || 0).toFixed(4) + '</dd>';
+    html += '</dl></div>';
+
+    // Right: raw response with highlighting
+    html += '<div class="response-body">';
+    if (snapshot.raw_response) {
+        html += highlightResponse(snapshot.raw_response, snapshot.competitor_mentions);
+    } else {
+        html += '<span class="muted">No raw response stored.</span>';
+    }
+    html += '</div>';
+
+    html += '</div>';
+    body.innerHTML = html;
+}
+
+function closeInspector() {
+    document.getElementById('inspectorModal').style.display = 'none';
+}
+
+function escapeRegex(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function highlightResponse(text, competitorMentions) {
+    var html = escHtml(text);
+
+    // Try to highlight brand name from debug data
+    if (debugData && debugData.snapshots && debugData.snapshots.length > 0) {
+        // Find brand name from the first snapshot that has mention_context
+        var firstMentioned = debugData.snapshots.find(function(s) { return s.brand_mentioned; });
+        if (firstMentioned && firstMentioned.mention_context) {
+            // Use mention_context to extract brand - look through common patterns
+        }
+    }
+
+    // Highlight competitor names (yellow)
+    if (competitorMentions) {
+        Object.keys(competitorMentions).forEach(function(comp) {
+            try {
+                html = html.replace(new RegExp('(' + escapeRegex(comp) + ')', 'gi'),
+                    '<mark class="highlight-competitor">$1</mark>');
+            } catch(e) {}
+        });
+    }
+
+    // Highlight negative keywords (red underline)
+    html = html.replace(/\b(avoid|issues?\b|problems?\b|drawback|downside|not recommend|worse|inferior|lacking)\b/gi,
+        '<span class="highlight-negative">$&</span>');
+
+    return html;
+}
+
+/* ---- Keyboard shortcuts ---- */
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        closeInspector();
+        closeTraceModal();
+    }
+});
+
+/* ---- Init ---- */
+document.addEventListener('DOMContentLoaded', loadDebugData);
+</script>
+{% endblock %}

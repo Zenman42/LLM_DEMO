@@ -1,0 +1,1406 @@
+{% extends "base.html" %}
+
+{% block title %}LLM Visibility Dashboard — LLM Tracker{% endblock %}
+{% block page_title %}LLM Visibility Dashboard{% endblock %}
+
+{% block content %}
+<div id="llmDashApp">
+    <div class="empty-state"><p>Loading...</p></div>
+</div>
+
+<!-- Response Inspector Modal -->
+<div id="inspectorModal" class="serp-modal-overlay" style="display:none;" onclick="if(event.target===this)closeInspectorModal()">
+    <div class="serp-modal" style="max-width:960px;">
+        <div class="serp-modal-header">
+            <h3 id="inspectorModalTitle">Response Inspector</h3>
+            <button class="serp-modal-close" onclick="closeInspectorModal()">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+        </div>
+        <div class="serp-modal-body" id="inspectorModalBody">
+            <p class="muted">Loading...</p>
+        </div>
+    </div>
+</div>
+
+<script>
+const PROJECT_ID = {{ project_id }};
+
+/* ---- State ---- */
+let currentTab = 'summary';
+let selectedDays = 30;
+let biData = null;        // bi-dashboard response
+let dashData = null;      // dashboard response (mention rates)
+let projectName = '';
+let brandName = '';
+let competitors = [];
+
+let sovDetailLevel = '';
+
+/* Competitive tab filters */
+let compProvider = '';
+let compCategory = '';
+let availableCategories = [];
+let availableProviders = [];
+
+/* Chart instances */
+let trendChart = null;
+let radarChart = null;
+let donutChart = null;
+let heatmapChart = null;
+let networkChart = null;
+let _citationsGen = 0;       // generation counter to cancel stale async renderCitations calls
+let _networkResizeAttached = false;
+
+/* ---- Theme-aware semantic colors via CSS custom properties ---- */
+/* Colors defined as --tc-green, --tc-yellow, etc. in style.css */
+function tc(key) {
+    return 'var(--tc-' + key + ')';
+}
+
+const COLORS = [
+    '#60a5fa', '#34d399', '#fb923c', '#a78bfa',
+    '#f87171', '#2dd4bf', '#fbbf24', '#818cf8',
+    '#fb7185', '#4ade80', '#fdba74', '#c084fc',
+];
+
+const PROVIDER_COLORS = {
+    chatgpt: '#60a5fa', gemini: '#34d399', deepseek: '#a78bfa',
+    yandexgpt: '#fb923c', perplexity: '#f87171', gigachat: '#f97316',
+};
+
+/* ---- Metric Glossary & Tooltips ---- */
+var GLOSSARY = {
+    SoM: 'Share of Model — доля упоминаний бренда среди всех упомянутых брендов. Формула: бренд / (бренд + конкуренты) \u00d7 100%',
+    AIVS: 'AI Visibility Score — агрегированная оценка видимости бренда (0\u2013100). Учитывает позицию, тональность и тип запроса. Формула: средневзвешенный RVS \u00d7 100',
+    NSS: 'Net Sentiment Score — индекс тональности упоминаний (\u2212100 до +100). Формула: (% позитивных \u2212 % негативных) \u00d7 100',
+    Top1: 'Top-1 Win Rate — доля структурированных ответов, где бренд занял 1-ю позицию в списке/таблице',
+    Hallucination: 'Hallucination Rate — доля ответов с упоминанием бренда, помеченных как галлюцинация (вымышленные факты)',
+    Resilience: 'Resilience Score — стабильность упоминаний бренда при повторных запросах. 1.0 = упоминается всегда, 0 = нестабильно',
+    RAGCitation: 'RAG Citation Trust — домены, которые LLM цитирует в ответах с упоминанием бренда',
+    IntentPenetration: 'Intent Penetration — оценка AIVS в разбивке по типам запросов: сравнение, рекомендация, проверка бренда',
+    CompSOV: 'Share of Voice — доля упоминаний каждого бренда среди всех упоминаний. Показаны бренды, дающие 80% суммарной доли',
+    SoMDistribution: 'Share of Model — распределение доли модели между вашим брендом и конкурентами',
+    Heatmap: 'AIVS по типам запросов и провайдерам. Зелёный = высокая видимость, красный = низкая',
+    CitationNetwork: 'Граф связей между LLM-провайдерами и доменами, которые они цитируют в ответах',
+    CitationDomains: 'Рейтинг доменов по частоте цитирования в ответах LLM с упоминанием бренда',
+    CompLeaderboard: 'Сравнение конкурентов по ключевым метрикам: SoM, Mention Rate и средний RVS',
+};
+
+function tip(key, label) {
+    var text = GLOSSARY[key] || key;
+    return '<span class="term-tip" data-tip="' + escapeHtml(text) + '">' + (label || key)
+        + '<svg class="term-tip__icon" viewBox="0 0 16 16" fill="currentColor">'
+        + '<circle cx="8" cy="8" r="7" fill="none" stroke="currentColor" stroke-width="1.2"/>'
+        + '<text x="8" y="12" text-anchor="middle" font-size="11" font-weight="700">?</text></svg></span>';
+}
+
+/* ---- Init ---- */
+document.addEventListener('DOMContentLoaded', loadDashboard);
+
+async function loadDashboard() {
+    // Wait for role to be loaded from base.html loadCurrentUser()
+    await waitForRole();
+
+    // Load project info first
+    var projResp = await apiFetch('/api/v1/projects/' + PROJECT_ID);
+    if (projResp && projResp.ok) {
+        var proj = await projResp.json();
+        projectName = proj.name || 'Project';
+        brandName = proj.brand_name || '';
+        competitors = proj.competitors || [];
+    }
+
+    // Load available categories and providers
+    var catResp = await apiFetch('/api/v1/llm/categories/' + PROJECT_ID);
+    if (catResp && catResp.ok) {
+        var catData = await catResp.json();
+        availableCategories = catData.categories || [];
+    }
+
+    // Derive available providers from project's llm_providers
+    if (projResp && projResp.ok) {
+        // Re-fetch if needed; proj already parsed above
+    }
+    availableProviders = ['chatgpt', 'gemini', 'deepseek', 'yandexgpt', 'perplexity', 'gigachat'];
+
+    renderShell();
+    await refreshData();
+}
+
+function renderShell() {
+    var app = document.getElementById('llmDashApp');
+    var allTabs = [
+        { id: 'summary', label: 'Executive Summary' },
+        { id: 'competitive', label: 'Competitive Landscape' },
+        { id: 'heatmap', label: 'Semantic Heatmap' },
+        { id: 'citations', label: 'Citations & RAG' },
+        { id: 'geo', label: 'GEO Action Center', adminOnly: true },
+        { id: 'inspector', label: 'Response Inspector' },
+    ];
+    var tabs = allTabs.filter(function(t) { return !t.adminOnly || isAdmin(); });
+
+    var html = '';
+
+    // Context bar
+    html += '<div class="llm-dash__context-bar">';
+    html += '<div style="display:flex;align-items:center;gap:1rem;">';
+    html += '<a href="/project/' + PROJECT_ID + '" class="back-link">';
+    html += '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>';
+    html += 'Back</a>';
+    html += '<span class="llm-dash__project-name">' + escapeHtml(projectName) + '</span>';
+    html += '</div>';
+    html += '<div class="llm-dash__controls">';
+    html += '<a href="/project/' + PROJECT_ID + '/prompts" class="debug-link" title="Manage Prompts">';
+    html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
+    html += 'Prompts</a>';
+    html += '<a href="/project/' + PROJECT_ID + '/competitors" class="debug-link" title="Manage Competitors">';
+    html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>';
+    html += 'Competitors</a>';
+    if (isAdmin()) {
+        html += '<a href="/project/' + PROJECT_ID + '/geo-command-center" class="debug-link" title="GEO Command Center">';
+        html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
+        html += 'GEO Center</a>';
+        html += '<a href="/project/' + PROJECT_ID + '/llm-debug" class="debug-link" title="Open Debug Console">';
+        html += '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>';
+        html += 'Debug</a>';
+    }
+    html += '<select id="daysSelector" onchange="onDaysChange(this.value)">';
+    html += '<option value="7"' + (selectedDays===7?' selected':'') + '>7 days</option>';
+    html += '<option value="30"' + (selectedDays===30?' selected':'') + '>30 days</option>';
+    html += '<option value="90"' + (selectedDays===90?' selected':'') + '>90 days</option>';
+    html += '</select>';
+    html += '</div></div>';
+
+    // Tabs
+    html += '<div class="llm-dash__tabs">';
+    tabs.forEach(function(t) {
+        html += '<button class="llm-dash__tab' + (t.id===currentTab?' active':'') + '" onclick="switchTab(\'' + t.id + '\')" data-tab="' + t.id + '">' + t.label + '</button>';
+    });
+    html += '</div>';
+
+    // Panels
+    tabs.forEach(function(t) {
+        html += '<div class="llm-dash__panel' + (t.id===currentTab?' active':'') + '" id="panel-' + t.id + '">';
+        html += '<div class="empty-state"><p>Loading...</p></div>';
+        html += '</div>';
+    });
+
+    app.innerHTML = html;
+}
+
+async function refreshData() {
+    var biParams = '?days=' + selectedDays;
+    if (compProvider) biParams += '&provider=' + encodeURIComponent(compProvider);
+    if (compCategory) biParams += '&category=' + encodeURIComponent(compCategory);
+
+    var dashParams = '?days=' + selectedDays + (sovDetailLevel ? '&detail_level=' + sovDetailLevel : '');
+    if (compCategory) dashParams += '&category=' + encodeURIComponent(compCategory);
+
+    var [biResp, dashResp] = await Promise.all([
+        apiFetch('/api/v1/llm/bi-dashboard/' + PROJECT_ID + biParams),
+        apiFetch('/api/v1/llm/dashboard/' + PROJECT_ID + dashParams),
+    ]);
+
+    biData = biResp && biResp.ok ? await biResp.json() : null;
+    dashData = dashResp && dashResp.ok ? await dashResp.json() : null;
+
+    renderCurrentTab();
+}
+
+function switchTab(tabId) {
+    currentTab = tabId;
+    document.querySelectorAll('.llm-dash__tab').forEach(function(b) { b.classList.remove('active'); });
+    document.querySelector('.llm-dash__tab[data-tab="' + tabId + '"]').classList.add('active');
+    document.querySelectorAll('.llm-dash__panel').forEach(function(p) { p.classList.remove('active'); });
+    document.getElementById('panel-' + tabId).classList.add('active');
+    renderCurrentTab();
+}
+
+function onDaysChange(val) {
+    selectedDays = parseInt(val);
+    refreshData();
+}
+
+function switchSovDetail() {
+    sovDetailLevel = sovDetailLevel === 'detailed' ? '' : 'detailed';
+    refreshData();
+}
+
+function renderCurrentTab() {
+    switch (currentTab) {
+        case 'summary': renderSummary(); break;
+        case 'competitive': renderCompetitive(); break;
+        case 'heatmap': renderHeatmap(); break;
+        case 'citations': renderCitations(); break;
+        case 'geo': renderGeo(); break;
+        case 'inspector': renderInspector(); break;
+    }
+}
+
+/* ---- Helpers ---- */
+function escapeHtml(t) {
+    if (!t) return '';
+    return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function formatPct(v) { return (v * 100).toFixed(1) + '%'; }
+function formatScore(v) { return Number(v).toFixed(1); }
+
+function providerPill(name) {
+    return '<span class="provider-pill provider-pill--' + name + '">' + name + '</span>';
+}
+
+function mentionBadge(type) {
+    return '<span class="mention-badge mention-badge--' + type + '">' + type + '</span>';
+}
+
+function severityBadge(sev) {
+    return '<span class="severity-badge severity-badge--' + sev + '">' + sev + '</span>';
+}
+
+/* ================================================================
+   TAB 1: Executive Summary — 3-Level GEO Architecture
+   ================================================================ */
+
+/* ---- Metric interpretation helpers ---- */
+function aivsZone(v) {
+    if (v >= 70) return { cls: 'metric-zone--green', text: 'Высокая видимость' };
+    if (v >= 40) return { cls: 'metric-zone--yellow', text: 'Средняя видимость' };
+    if (v >= 15) return { cls: 'metric-zone--orange', text: 'Низкая видимость' };
+    return { cls: 'metric-zone--red', text: 'Бренд невидим' };
+}
+function nssZone(v) {
+    if (v >= 30) return { cls: 'metric-zone--green', text: 'Адвокат бренда' };
+    if (v >= 0) return { cls: 'metric-zone--yellow', text: 'Нейтральный' };
+    if (v >= -30) return { cls: 'metric-zone--orange', text: 'Осторожно' };
+    return { cls: 'metric-zone--red', text: 'Токсичный шлейф' };
+}
+function hallZone(v) {
+    if (v === null || v === undefined) return { cls: 'metric-zone--muted', text: 'N/A' };
+    if (v <= 5) return { cls: 'metric-zone--green', text: 'Низкий риск' };
+    if (v <= 15) return { cls: 'metric-zone--yellow', text: 'Средний риск' };
+    return { cls: 'metric-zone--red', text: 'Высокий риск' };
+}
+function resZone(v) {
+    if (v >= 0.7) return { cls: 'metric-zone--green', text: 'Стабильно' };
+    if (v >= 0.4) return { cls: 'metric-zone--yellow', text: 'Нестабильно' };
+    return { cls: 'metric-zone--red', text: 'Хаотично' };
+}
+function nssColor(v) {
+    if (v >= 30) return tc('green');
+    if (v >= 0) return tc('muted');
+    if (v >= -30) return tc('orange');
+    return tc('red');
+}
+
+function renderSummary() {
+    var panel = document.getElementById('panel-summary');
+    if (!biData || !dashData) {
+        panel.innerHTML = '<div class="llm-dash__empty"><p>No data available for this period.</p></div>';
+        return;
+    }
+
+    var gm = biData.global_metrics;
+    var cg = biData.citation_graph;
+    var html = '';
+
+    /* ═══════════════════════════════════════════════════════
+       LEVEL 1: North Star Metrics (CEO / CMO)
+       ═══════════════════════════════════════════════════════ */
+    html += '<div class="summary-level">';
+    html += '<div class="summary-level__header">';
+    html += '<span class="summary-level__icon">🌟</span>';
+    html += '<span class="summary-level__title">North Star Metrics</span>';
+    html += '<span class="summary-level__audience">CEO / CMO</span>';
+    html += '</div>';
+    html += '<div class="summary-level__grid summary-level__grid--2col">';
+
+    // --- SoM card ---
+    var somPct = gm.som;
+    html += '<div class="metric-card">';
+    html += '<div class="metric-card__header">' + tip('SoM', 'Share of Model (SoM)') + '</div>';
+    html += '<div class="metric-card__value" style="color:' + tc('green') + ';">' + formatScore(somPct) + '%</div>';
+    html += '<div class="metric-card__viz">';
+    html += '<div class="som-donut-mini" id="somDonutMini" style="height:80px;"></div>';
+    html += '</div>';
+    html += '<div class="metric-card__sublabel">Доля бренда среди всех упоминаний в ответах LLM</div>';
+    html += '</div>';
+
+    // --- AIVS card ---
+    var az = aivsZone(gm.aivs);
+    html += '<div class="metric-card">';
+    html += '<div class="metric-card__header">' + tip('AIVS', 'AI Visibility Score (AIVS)') + '</div>';
+    html += '<div class="metric-card__value" style="color:var(--accent);">' + formatScore(gm.aivs) + '<span class="metric-card__max"> / 100</span></div>';
+    html += '<div class="metric-card__viz">';
+    html += '<div class="progress-bar"><div class="progress-bar__fill" style="width:' + Math.min(gm.aivs, 100) + '%;"></div></div>';
+    html += '</div>';
+    html += '<div class="metric-card__interpretation ' + az.cls + '">' + az.text + '</div>';
+    html += '</div>';
+
+    html += '</div>'; // grid
+    html += '</div>'; // level
+
+    /* ═══════════════════════════════════════════════════════
+       LEVEL 2: Context & Reputation (PR / Brand Managers)
+       ═══════════════════════════════════════════════════════ */
+    html += '<div class="summary-level">';
+    html += '<div class="summary-level__header">';
+    html += '<span class="summary-level__icon">🎭</span>';
+    html += '<span class="summary-level__title">Контекст и Репутация</span>';
+    html += '<span class="summary-level__audience">PR / Brand-менеджеры</span>';
+    html += '</div>';
+    html += '<div class="summary-level__grid summary-level__grid--3col">';
+
+    // --- NSS card ---
+    var nz = nssZone(gm.nss);
+    var nc = nssColor(gm.nss);
+    html += '<div class="metric-card">';
+    html += '<div class="metric-card__header">' + tip('NSS', 'Net Sentiment Score (NSS)') + '</div>';
+    html += '<div class="metric-card__value" style="color:' + nc + ';">' + (gm.nss >= 0 ? '+' : '') + formatScore(gm.nss) + '</div>';
+    html += '<div class="metric-card__viz">';
+    html += '<div class="nss-bar">';
+    // NSS range is -100..+100, map to 0..100% for marker position
+    var nssPos = ((gm.nss + 100) / 200) * 100;
+    html += '<div class="nss-bar__track">';
+    html += '<div class="nss-bar__marker" style="left:' + Math.max(2, Math.min(98, nssPos)) + '%;"></div>';
+    html += '</div>';
+    html += '<div class="nss-bar__labels"><span>-100</span><span>0</span><span>+100</span></div>';
+    html += '</div>';
+    html += '</div>';
+    html += '<div class="metric-card__interpretation ' + nz.cls + '">' + nz.text + '</div>';
+    html += '</div>';
+
+    // --- Top-1 Win Rate card ---
+    html += '<div class="metric-card">';
+    html += '<div class="metric-card__header">' + tip('Top1', 'Top-1 Win Rate') + '</div>';
+    if (gm.top1_win_rate !== null && gm.top1_win_rate !== undefined) {
+        html += '<div class="metric-card__value" style="color:' + tc('yellow') + ';">' + formatScore(gm.top1_win_rate) + '%</div>';
+        html += '<div class="metric-card__sublabel">Доля списков, где бренд на 1-й позиции</div>';
+    } else {
+        html += '<div class="metric-card__value metric-na">N/A</div>';
+        html += '<div class="metric-card__sublabel metric-na-hint">Нужен re-collect с pipeline для position_rank</div>';
+    }
+    html += '</div>';
+
+    // --- Hallucination Rate card ---
+    var hz = hallZone(gm.hallucination_rate);
+    html += '<div class="metric-card">';
+    html += '<div class="metric-card__header">' + tip('Hallucination', 'Hallucination Rate') + '</div>';
+    if (gm.hallucination_rate !== null && gm.hallucination_rate !== undefined) {
+        html += '<div class="metric-card__value" style="color:' + (gm.hallucination_rate > 15 ? tc('red') : gm.hallucination_rate > 5 ? tc('yellow') : tc('green')) + ';">' + formatScore(gm.hallucination_rate) + '%</div>';
+        html += '<div class="metric-card__interpretation ' + hz.cls + '">' + hz.text + '</div>';
+    } else {
+        html += '<div class="metric-card__value metric-na">N/A</div>';
+        html += '<div class="metric-card__sublabel metric-na-hint">Нужен re-collect с pipeline для hallucination check</div>';
+    }
+    html += '</div>';
+
+    html += '</div>'; // grid
+    html += '</div>'; // level
+
+    /* ═══════════════════════════════════════════════════════
+       LEVEL 3: Diagnostic (SEO / GEO Engineers)
+       ═══════════════════════════════════════════════════════ */
+    html += '<div class="summary-level">';
+    html += '<div class="summary-level__header">';
+    html += '<span class="summary-level__icon">⚙️</span>';
+    html += '<span class="summary-level__title">Диагностика</span>';
+    html += '<span class="summary-level__audience">SEO / GEO-инженеры</span>';
+    html += '</div>';
+    html += '<div class="summary-level__grid summary-level__grid--3col">';
+
+    // --- Resilience card ---
+    var rz = resZone(gm.resilience_score);
+    var resPct = (gm.resilience_score * 100).toFixed(0);
+    html += '<div class="metric-card">';
+    html += '<div class="metric-card__header">' + tip('Resilience', 'Resilience Score') + '</div>';
+    html += '<div class="metric-card__value" style="color:#a78bfa;">' + resPct + '%</div>';
+    html += '<div class="metric-card__viz">';
+    html += '<div class="progress-bar progress-bar--purple"><div class="progress-bar__fill" style="width:' + resPct + '%;"></div></div>';
+    html += '</div>';
+    html += '<div class="metric-card__interpretation ' + rz.cls + '">' + rz.text + '</div>';
+    html += '</div>';
+
+    // --- RAG Citation Trust card ---
+    html += '<div class="metric-card">';
+    html += '<div class="metric-card__header">' + tip('RAGCitation', 'RAG Citation Trust') + '</div>';
+    if (cg && cg.domains && cg.domains.length > 0) {
+        html += '<div class="citation-compact">';
+        var topDomains = cg.domains.slice(0, 5);
+        var totalCit = cg.total_citations || 1;
+        topDomains.forEach(function(d) {
+            var pct = ((d.count / totalCit) * 100).toFixed(1);
+            html += '<div class="citation-compact__row">';
+            html += '<span class="citation-compact__domain">' + escapeHtml(d.domain) + '</span>';
+            html += '<span class="citation-compact__bar-wrap"><span class="citation-compact__bar" style="width:' + Math.min(pct, 100) + '%;"></span></span>';
+            html += '<span class="citation-compact__pct">' + pct + '%</span>';
+            html += '</div>';
+        });
+        html += '</div>';
+        html += '<div class="metric-card__sublabel">' + cg.total_citations + ' цитирований • ' + cg.domains.length + ' доменов</div>';
+    } else {
+        html += '<div class="metric-card__value metric-na">Нет данных</div>';
+        html += '<div class="metric-card__sublabel">Цитирования не обнаружены</div>';
+    }
+    html += '</div>';
+
+    // --- Intent Penetration card ---
+    html += '<div class="metric-card">';
+    html += '<div class="metric-card__header">' + tip('IntentPenetration', 'Intent Penetration (AIVS)') + '</div>';
+    var ip = gm.intent_penetration || {};
+    var ipKeys = Object.keys(ip);
+    if (ipKeys.length > 0) {
+        html += '<div class="intent-bars">';
+        // Sort by value descending
+        ipKeys.sort(function(a, b) { return ip[b] - ip[a]; });
+        ipKeys.forEach(function(k) {
+            var v = ip[k];
+            var barColor = v >= 50 ? tc('green') : v >= 20 ? tc('yellow') : tc('red');
+            html += '<div class="intent-bars__row">';
+            html += '<span class="intent-bars__label">' + escapeHtml(k) + '</span>';
+            html += '<span class="intent-bars__bar-wrap"><span class="intent-bars__bar" style="width:' + Math.min(v, 100) + '%;background:' + barColor + ';"></span></span>';
+            html += '<span class="intent-bars__value">' + formatScore(v) + '</span>';
+            html += '</div>';
+        });
+        html += '</div>';
+    } else {
+        html += '<div class="metric-card__value metric-na">Нет данных</div>';
+    }
+    html += '</div>';
+
+    html += '</div>'; // grid
+    html += '</div>'; // level
+
+    /* ═══════════════════════════════════════════════════════
+       Visibility Trend (full width chart)
+       ═══════════════════════════════════════════════════════ */
+    html += '<div class="card" style="margin-top:0.5rem;">';
+    html += '<h3 style="margin-bottom:0.75rem;">📈 Visibility Trend</h3>';
+    html += '<div class="chart-container"><canvas id="trendChartCanvas"></canvas></div>';
+    html += '</div>';
+
+    panel.innerHTML = html;
+
+    loadTrendChart();
+    renderSomDonutMini();
+}
+
+function renderSomDonutMini() {
+    var container = document.getElementById('somDonutMini');
+    if (!container || !biData) return;
+
+    var cm = biData.competitive_matrix;
+    var data = [{ value: cm.target.som, name: escapeHtml(brandName || 'Brand') }];
+    cm.competitors.forEach(function(c) {
+        data.push({ value: c.som, name: c.name });
+    });
+
+    var chart = echarts.init(container, 'dark');
+    chart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'item', formatter: '{b}: {c}%', textStyle: { fontSize: 11 } },
+        series: [{
+            type: 'pie',
+            radius: ['50%', '80%'],
+            center: ['50%', '50%'],
+            avoidLabelOverlap: false,
+            itemStyle: { borderRadius: 4, borderColor: '#1a1f2e', borderWidth: 1 },
+            label: { show: false },
+            data: data,
+            color: ['#34d399'].concat(COLORS.slice(4)),
+        }],
+    });
+    window.addEventListener('resize', function() { chart && chart.resize(); });
+}
+
+/* Legacy kpiCard kept for potential reuse */
+function kpiCard(label, value, sublabel, color) {
+    return '<div class="kpi-card kpi-card--' + color + '">'
+        + '<div class="kpi-card__value">' + value + '</div>'
+        + '<div class="kpi-card__label">' + label + '</div>'
+        + (sublabel ? '<div class="kpi-card__sublabel">' + sublabel + '</div>' : '')
+        + '</div>';
+}
+
+async function loadTrendChart() {
+    var ctx = document.getElementById('trendChartCanvas');
+    if (!ctx) return;
+
+    var resp = await apiFetch('/api/v1/llm/chart/' + PROJECT_ID + '?days=' + selectedDays);
+    if (!resp || !resp.ok) return;
+    var data = await resp.json();
+
+    if (trendChart) trendChart.destroy();
+
+    var colorIdx = 0;
+    var datasets = data.datasets.map(function(ds) {
+        var color = PROVIDER_COLORS[ds.label] || COLORS[colorIdx % COLORS.length];
+        colorIdx++;
+        return {
+            label: ds.label,
+            data: ds.data,
+            borderColor: color,
+            backgroundColor: color + '20',
+            fill: false,
+            tension: 0.3,
+            pointRadius: 3,
+            pointHoverRadius: 6,
+            borderWidth: 2,
+            spanGaps: true,
+        };
+    });
+
+    trendChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels: data.labels, datasets: datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { labels: { color: '#a0aec0', font: { size: 11 } } },
+            },
+            scales: {
+                x: { ticks: { color: '#64748b', maxTicksLimit: 10 }, grid: { color: 'rgba(255,255,255,0.04)' } },
+                y: {
+                    min: 0, max: 1,
+                    ticks: { color: '#64748b', callback: function(v) { return (v*100)+'%'; } },
+                    grid: { color: 'rgba(255,255,255,0.04)' },
+                },
+            },
+        },
+    });
+}
+
+function renderRadarChart() {
+    var container = document.getElementById('radarChartContainer');
+    if (!container || !dashData) return;
+
+    if (radarChart) radarChart.dispose();
+
+    var providerOrder = ['yandexgpt', 'deepseek', 'perplexity', 'chatgpt', 'gemini', 'gigachat'];
+    var providers = providerOrder.filter(function(p) { return p in (dashData.mention_rate_by_provider || {}); });
+    if (!providers.length) {
+        container.innerHTML = '<div class="llm-dash__empty" style="padding:2rem;"><p>No provider data</p></div>';
+        return;
+    }
+
+    radarChart = echarts.init(container, 'dark');
+    var values = providers.map(function(p) { return Math.round(dashData.mention_rate_by_provider[p] * 100); });
+
+    radarChart.setOption({
+        backgroundColor: 'transparent',
+        radar: {
+            indicator: providers.map(function(p) { return { name: p, max: 100 }; }),
+            shape: 'polygon',
+            axisName: { color: '#a0aec0', fontSize: 11 },
+            splitArea: { areaStyle: { color: ['rgba(96,165,250,0.02)', 'rgba(96,165,250,0.05)'] } },
+            splitLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } },
+            axisLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } },
+        },
+        series: [{
+            type: 'radar',
+            data: [{
+                value: values,
+                name: 'Mention Rate %',
+                areaStyle: { color: 'rgba(96,165,250,0.2)' },
+                lineStyle: { color: '#60a5fa', width: 2 },
+                itemStyle: { color: '#60a5fa' },
+            }],
+        }],
+        tooltip: { trigger: 'item' },
+    });
+
+    window.addEventListener('resize', function() { radarChart && radarChart.resize(); });
+}
+
+/* ================================================================
+   TAB 2: Competitive Landscape
+   ================================================================ */
+function onCompFilterChange() {
+    compProvider = document.getElementById('compProviderFilter') ? document.getElementById('compProviderFilter').value : '';
+    compCategory = document.getElementById('compCategoryFilter') ? document.getElementById('compCategoryFilter').value : '';
+    refreshData();
+}
+
+function renderCompetitive() {
+    var panel = document.getElementById('panel-competitive');
+    if (!biData) {
+        panel.innerHTML = '<div class="llm-dash__empty"><p>No data available.</p></div>';
+        return;
+    }
+
+    var cm = biData.competitive_matrix;
+    var html = '';
+
+    // Filter bar
+    html += '<div class="filter-bar" style="margin-bottom:1rem;">';
+    html += '<select id="compProviderFilter" onchange="onCompFilterChange()">';
+    html += '<option value="">All providers</option>';
+    availableProviders.forEach(function(p) {
+        html += '<option value="' + escapeHtml(p) + '"' + (compProvider===p?' selected':'') + '>' + escapeHtml(p) + '</option>';
+    });
+    html += '</select>';
+    if (availableCategories.length > 0) {
+        html += '<select id="compCategoryFilter" onchange="onCompFilterChange()">';
+        html += '<option value="">All scenarios</option>';
+        availableCategories.forEach(function(c) {
+            html += '<option value="' + escapeHtml(c) + '"' + (compCategory===c?' selected':'') + '>' + escapeHtml(c) + '</option>';
+        });
+        html += '</select>';
+    }
+    if (compProvider || compCategory) {
+        html += '<button class="btn btn-sm btn-ghost" onclick="compProvider=\'\';compCategory=\'\';refreshData();">Reset filters</button>';
+    }
+    html += '</div>';
+
+    html += '<div class="charts-row">';
+
+    // Donut chart
+    html += '<div class="card"><h3 style="margin-bottom:0.75rem;">' + tip('SoMDistribution', 'Share of Model Distribution') + '</h3>';
+    html += '<div id="donutChartContainer" style="height:320px;"></div></div>';
+
+    // Leaderboard
+    html += '<div class="card"><h3 style="margin-bottom:0.75rem;">' + tip('CompLeaderboard', 'Competitive Leaderboard') + '</h3>';
+    html += '<div style="overflow-x:auto;">';
+    html += '<table class="serp-table"><thead><tr>';
+    html += '<th>Brand</th><th>SoM %</th><th>Mention Rate</th><th>Avg RVS</th>';
+    html += '</tr></thead><tbody>';
+
+    // Merge target + competitors, sort by SoM descending
+    var allBrands = cm.competitors.slice().map(function(c) { return { name: c.name, som: c.som, mention_rate: c.mention_rate, avg_rvs: c.avg_rvs, isTarget: false }; });
+    allBrands.push({ name: cm.target.name, som: cm.target.som, mention_rate: cm.target.mention_rate, avg_rvs: cm.target.avg_rvs, isTarget: true });
+    allBrands.sort(function(a, b) { return b.som - a.som; });
+
+    allBrands.forEach(function(c) {
+        html += '<tr' + (c.isTarget ? ' class="leaderboard-target"' : '') + '>';
+        html += '<td>' + (c.isTarget ? '<strong>' + escapeHtml(c.name) + '</strong>' : escapeHtml(c.name)) + '</td>';
+        html += '<td>' + formatScore(c.som) + '%</td>';
+        html += '<td>' + formatPct(c.mention_rate) + '</td>';
+        html += '<td>' + formatScore(c.avg_rvs) + '</td>';
+        html += '</tr>';
+    });
+
+    html += '</tbody></table></div></div>';
+    html += '</div>';
+
+    // Share of Voice by Brand — sorted by SOV descending
+    if (dashData && dashData.competitor_sov && Object.keys(dashData.competitor_sov).length > 0) {
+        var hasSubBrands = Object.keys(dashData.competitor_sov).some(function(k) { return k.indexOf('::') !== -1; });
+        html += '<div class="card" style="margin-top:1rem;">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">';
+        html += '<h3>' + tip('CompSOV', 'Share of Voice by Brand') + '</h3>';
+        if (hasSubBrands || sovDetailLevel === 'detailed') {
+            var btnLabel = sovDetailLevel === 'detailed' ? 'Roll-up View' : 'Show Sub-Brands';
+            html += '<button class="btn btn-sm btn-ghost" onclick="switchSovDetail()">' + btnLabel + '</button>';
+        }
+        html += '</div>';
+        html += '<div class="provider-bars">';
+
+        var sovEntries = Object.entries(dashData.competitor_sov).map(function(e) {
+            var isSubBrand = e[0].indexOf('::') !== -1;
+            var parentName = isSubBrand ? e[0].split('::')[0] : null;
+            var subName = isSubBrand ? e[0].split('::')[1] : null;
+            var displayName = isSubBrand ? subName : e[0];
+            var isBrandSub = parentName === '__brand__';
+            return { key: e[0], name: displayName, sov: e[1], isBrand: false, isSubBrand: isSubBrand, isBrandSub: isBrandSub, parentName: parentName };
+        });
+        sovEntries.push({ key: '__brand__', name: brandName || 'Your Brand', sov: dashData.sov, isBrand: true, isSubBrand: false, isBrandSub: false, parentName: null });
+        sovEntries.sort(function(a, b) {
+            if (!a.isSubBrand && !b.isSubBrand) return b.sov - a.sov;
+            if (a.isSubBrand && !b.isSubBrand) {
+                if ((a.isBrandSub && b.isBrand) || a.parentName === b.key) return 1;
+                return b.sov - a.sov;
+            }
+            if (!a.isSubBrand && b.isSubBrand) {
+                if ((b.isBrandSub && a.isBrand) || b.parentName === a.key) return -1;
+                return b.sov - a.sov;
+            }
+            return b.sov - a.sov;
+        });
+        // --- 80% cumulative SOV cutoff ---
+        // First compute total SOV across all top-level entries, then find
+        // the index after which cumulative SOV >= 80% of that total.
+        var totalSOV = 0;
+        for (var ti = 0; ti < sovEntries.length; ti++) {
+            if (!sovEntries[ti].isSubBrand) totalSOV += sovEntries[ti].sov;
+        }
+        var sovThreshold = totalSOV * 0.80;
+
+        var cumSOV = 0;
+        var cutoffIdx = sovEntries.length; // default: show all
+        var visibleParentKeys = new Set();
+        for (var si = 0; si < sovEntries.length; si++) {
+            var se = sovEntries[si];
+            if (se.isSubBrand) continue; // skip sub-brands for cumulative calc
+            cumSOV += se.sov;
+            visibleParentKeys.add(se.key);
+            if (cumSOV >= sovThreshold) {
+                // include all subsequent sub-brands of currently visible parents
+                cutoffIdx = si + 1;
+                while (cutoffIdx < sovEntries.length && sovEntries[cutoffIdx].isSubBrand && visibleParentKeys.has(sovEntries[cutoffIdx].parentName)) {
+                    cutoffIdx++;
+                }
+                break;
+            }
+        }
+
+        var hiddenCount = sovEntries.length - cutoffIdx;
+        var sovChartId = 'sovChart_' + Date.now();
+
+        var renderSovRow = function(entry) {
+            var indent = entry.isSubBrand ? 'padding-left:24px;' : '';
+            var nameStyle = '';
+            var barColor = '#f87171';
+            if (entry.isBrand) {
+                nameStyle = 'color:var(--accent);font-weight:600;';
+                barColor = 'var(--accent)';
+            } else if (entry.isBrandSub) {
+                nameStyle = 'color:var(--accent);font-size:0.85rem;opacity:0.8;';
+                barColor = 'var(--accent)';
+            } else if (entry.isSubBrand) {
+                nameStyle = 'font-size:0.85rem;opacity:0.8;';
+            }
+            var row = '<div class="provider-bar-row" style="' + indent + '">';
+            row += '<span class="provider-name" style="' + nameStyle + '">' + (entry.isSubBrand ? '↳ ' : '') + escapeHtml(entry.name) + '</span>';
+            row += '<div class="bar-container"><div class="bar-fill" style="width:' + (entry.sov * 100) + '%;background:' + barColor + ';"></div></div>';
+            row += '<span class="bar-value">' + formatPct(entry.sov) + '</span></div>';
+            return row;
+        };
+
+        // Visible rows
+        for (var vi = 0; vi < Math.min(cutoffIdx, sovEntries.length); vi++) {
+            html += renderSovRow(sovEntries[vi]);
+        }
+
+        // Hidden rows (collapsed by default)
+        if (hiddenCount > 0) {
+            html += '<div id="' + sovChartId + '_more" style="display:none;">';
+            for (var hi = cutoffIdx; hi < sovEntries.length; hi++) {
+                html += renderSovRow(sovEntries[hi]);
+            }
+            html += '</div>';
+            html += '<button class="btn btn-sm btn-ghost" style="margin-top:0.5rem;width:100%;text-align:center;" '
+                  + 'onclick="var el=document.getElementById(\'' + sovChartId + '_more\');var b=this;'
+                  + 'if(el.style.display===\'none\'){el.style.display=\'block\';b.textContent=\'Collapse\';}else{el.style.display=\'none\';b.textContent=\'Show all (' + hiddenCount + ' more)\';}">'
+                  + 'Show all (' + hiddenCount + ' more)</button>';
+        }
+        html += '</div></div>';
+    }
+
+    panel.innerHTML = html;
+    renderDonutChart();
+}
+
+function renderDonutChart() {
+    var container = document.getElementById('donutChartContainer');
+    if (!container || !biData) return;
+
+    if (donutChart) donutChart.dispose();
+    donutChart = echarts.init(container, 'dark');
+
+    var cm = biData.competitive_matrix;
+    var BRAND_COLOR = '#3b82f6';  // accent blue — stands out from competitor palette
+    var COMP_COLORS = ['#34d399', '#fb923c', '#a78bfa', '#f87171', '#2dd4bf', '#fbbf24', '#818cf8', '#fb7185', '#4ade80', '#fdba74', '#c084fc'];
+
+    // Build entries with brand flag, sort by SoM descending
+    var entries = cm.competitors.slice().map(function(c) { return { value: c.som, name: c.name, isTarget: false }; });
+    entries.push({ value: cm.target.som, name: cm.target.name, isTarget: true });
+    entries.sort(function(a, b) { return b.value - a.value; });
+
+    // Assign colors: accent for brand, palette for competitors
+    var compIdx = 0;
+    var data = [];
+    var colorList = [];
+    entries.forEach(function(e) {
+        data.push({ value: e.value, name: e.name });
+        if (e.isTarget) {
+            colorList.push(BRAND_COLOR);
+        } else {
+            colorList.push(COMP_COLORS[compIdx % COMP_COLORS.length]);
+            compIdx++;
+        }
+    });
+
+    var legendConfig;
+    if (data.length > 8) {
+        // Many items: horizontal scrollable legend at the bottom
+        legendConfig = {
+            orient: 'horizontal', bottom: 0, left: 'center',
+            type: 'scroll',
+            pageTextStyle: { color: '#a0aec0' },
+            pageIconColor: '#60a5fa',
+            pageIconInactiveColor: '#4a5568',
+            textStyle: { color: '#a0aec0', fontSize: 11 },
+        };
+    } else {
+        // Few items: vertical legend on the right
+        legendConfig = {
+            orient: 'vertical', right: 10, top: 'center',
+            textStyle: { color: '#a0aec0', fontSize: 11 },
+        };
+    }
+
+    var pieCenter = data.length > 8 ? ['50%', '45%'] : ['40%', '50%'];
+
+    donutChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'item', formatter: '{b}: {c}% ({d}%)' },
+        legend: legendConfig,
+        series: [{
+            type: 'pie',
+            radius: ['45%', '75%'],
+            center: pieCenter,
+            avoidLabelOverlap: false,
+            itemStyle: { borderRadius: 6, borderColor: '#1a1f2e', borderWidth: 2 },
+            label: { show: false },
+            emphasis: { label: { show: true, fontSize: 14, fontWeight: 'bold', color: '#fff' } },
+            data: data,
+            color: colorList,
+        }],
+    });
+
+    window.addEventListener('resize', function() { donutChart && donutChart.resize(); });
+}
+
+/* ================================================================
+   TAB 3: Semantic Heatmap
+   ================================================================ */
+async function renderHeatmap() {
+    var panel = document.getElementById('panel-heatmap');
+
+    var resp = await apiFetch('/api/v1/llm/heatmap/' + PROJECT_ID + '?days=' + selectedDays);
+    if (!resp || !resp.ok) {
+        panel.innerHTML = '<div class="llm-dash__empty"><p>No heatmap data available.</p></div>';
+        return;
+    }
+    var data = await resp.json();
+
+    if (!data.cells || !data.cells.length) {
+        panel.innerHTML = '<div class="llm-dash__empty"><p>No heatmap data for this period.</p></div>';
+        return;
+    }
+
+    var html = '<div class="card">';
+    html += '<h3 style="margin-bottom:0.75rem;">' + tip('Heatmap', 'AIVS by Scenario x Provider') + '</h3>';
+    html += '<div id="heatmapChartContainer" style="height:' + Math.max(300, data.scenarios.length * 80 + 100) + 'px;"></div>';
+    html += '<div class="heatmap-legend">';
+    html += '<div class="heatmap-legend__item"><div class="heatmap-legend__color" style="background:#f87171;"></div> Red (&lt;20)</div>';
+    html += '<div class="heatmap-legend__item"><div class="heatmap-legend__color" style="background:#fbbf24;"></div> Yellow (20-50)</div>';
+    html += '<div class="heatmap-legend__item"><div class="heatmap-legend__color" style="background:#34d399;"></div> Green (&ge;50)</div>';
+    html += '</div>';
+    html += '</div>';
+
+    // Detail table — sorted by AIVS descending
+    var sortedCells = data.cells.slice().sort(function(a, b) { return b.aivs - a.aivs; });
+    html += '<div class="card" style="margin-top:1rem;">';
+    html += '<h3 style="margin-bottom:0.75rem;">Heatmap Data</h3>';
+    html += '<div style="overflow-x:auto;"><table class="serp-table"><thead><tr>';
+    html += '<th>Scenario</th><th>Provider</th><th>AIVS</th><th>Mentions</th><th>Total</th><th>Zone</th>';
+    html += '</tr></thead><tbody>';
+    sortedCells.forEach(function(c) {
+        html += '<tr>';
+        html += '<td>' + escapeHtml(c.scenario) + '</td>';
+        html += '<td>' + providerPill(c.vendor) + '</td>';
+        html += '<td><strong>' + formatScore(c.aivs) + '</strong></td>';
+        html += '<td>' + c.mention_count + '</td>';
+        html += '<td>' + c.total_count + '</td>';
+        html += '<td>' + severityBadge(c.zone === 'red' ? 'critical' : c.zone === 'yellow' ? 'warning' : 'info') + '</td>';
+        html += '</tr>';
+    });
+    html += '</tbody></table></div></div>';
+
+    panel.innerHTML = html;
+    renderHeatmapChart(data);
+}
+
+function renderHeatmapChart(data) {
+    var container = document.getElementById('heatmapChartContainer');
+    if (!container) return;
+
+    if (heatmapChart) heatmapChart.dispose();
+    heatmapChart = echarts.init(container, 'dark');
+
+    var vendors = data.vendors;
+    var scenarios = data.scenarios;
+    var chartData = [];
+    var maxAivs = 100;
+
+    // Dynamic left margin based on longest scenario label (wider to fit wrapped text)
+    var maxLabelLen = 0;
+    scenarios.forEach(function(s) { maxLabelLen = Math.max(maxLabelLen, s.length); });
+    var leftMargin = Math.min(Math.max(maxLabelLen * 7, 140), 400);
+
+    data.cells.forEach(function(c) {
+        var xi = vendors.indexOf(c.vendor);
+        var yi = scenarios.indexOf(c.scenario);
+        if (xi >= 0 && yi >= 0) {
+            chartData.push([xi, yi, Math.round(c.aivs * 10) / 10]);
+        }
+    });
+
+    heatmapChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: {
+            position: 'top',
+            formatter: function(p) {
+                var cell = data.cells.find(function(c) { return c.vendor === vendors[p.data[0]] && c.scenario === scenarios[p.data[1]]; });
+                if (!cell) return '';
+                return '<strong>' + cell.scenario + ' / ' + cell.vendor + '</strong><br>'
+                    + 'AIVS: ' + formatScore(cell.aivs) + '<br>'
+                    + 'Mentions: ' + cell.mention_count + '/' + cell.total_count;
+            },
+        },
+        grid: { left: leftMargin, right: '12%', bottom: '15%', top: '5%' },
+        xAxis: {
+            type: 'category', data: vendors, splitArea: { show: true },
+            axisLabel: { color: '#a0aec0', fontSize: 11 },
+        },
+        yAxis: {
+            type: 'category', data: scenarios, splitArea: { show: true },
+            axisLabel: { color: '#a0aec0', fontSize: 11, width: leftMargin - 20, overflow: 'break', lineHeight: 15 },
+        },
+        visualMap: {
+            min: 0, max: maxAivs, calculable: true, orient: 'horizontal', left: 'center', bottom: '0%',
+            textStyle: { color: '#a0aec0' },
+            inRange: { color: ['#f87171', '#fbbf24', '#34d399'] },
+        },
+        series: [{
+            type: 'heatmap', data: chartData,
+            label: { show: true, color: '#fff', fontSize: 12, fontWeight: 'bold',
+                formatter: function(p) { return p.data[2]; }
+            },
+            emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.5)' } },
+            itemStyle: { borderWidth: 1, borderColor: '#1a1a2e' },
+        }],
+    });
+
+    // Drill-down: click cell → open Response Inspector with scenario + provider filters
+    heatmapChart.on('click', function(params) {
+        if (!params.data) return;
+        var vendor = vendors[params.data[0]];
+        var scenario = scenarios[params.data[1]];
+        inspectorProvider = vendor;
+        inspectorScenario = scenario;
+        inspectorOffset = 0;
+        switchTab('inspector');
+    });
+
+    window.addEventListener('resize', function() { heatmapChart && heatmapChart.resize(); });
+}
+
+/* ================================================================
+   TAB 4: Citations & RAG Network
+   ================================================================ */
+async function renderCitations() {
+    var panel = document.getElementById('panel-citations');
+    var gen = ++_citationsGen;  // bump generation; stale calls will bail out
+
+    var resp = await apiFetch('/api/v1/llm/citations/' + PROJECT_ID + '?days=' + selectedDays);
+    if (gen !== _citationsGen) return;  // stale – a newer call is in flight
+
+    var citationsData = resp && resp.ok ? await resp.json() : null;
+    if (gen !== _citationsGen) return;
+
+    var cg = biData ? biData.citation_graph : null;
+
+    if (!citationsData && !cg) {
+        panel.innerHTML = '<div class="llm-dash__empty"><p>No citation data available.</p></div>';
+        return;
+    }
+
+    var html = '';
+
+    // Network graph + trust table
+    html += '<div class="charts-row">';
+
+    // Graph
+    html += '<div class="card" style="min-width:0;"><h3 style="margin-bottom:0.75rem;">' + tip('CitationNetwork', 'Citation Network') + '</h3>';
+    html += '<div id="networkChartContainer" style="height:360px;"></div></div>';
+
+    // Trust domains table (limit displayed rows to prevent grid squeeze)
+    if (cg && cg.domains && cg.domains.length) {
+        var TABLE_LIMIT = 50;
+        var displayDomains = cg.domains.slice(0, TABLE_LIMIT);
+        html += '<div class="card" style="min-width:0;"><h3 style="margin-bottom:0.75rem;">' + tip('CitationDomains', 'Citation Trust Domains') + '</h3>';
+        html += '<div style="max-height:380px;overflow-y:auto;overflow-x:auto;"><table class="serp-table"><thead><tr>';
+        html += '<th>Domain</th><th>Count</th><th>Providers</th><th>Comp. Win</th>';
+        html += '</tr></thead><tbody>';
+        displayDomains.forEach(function(d) {
+            html += '<tr>';
+            html += '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><code style="font-size:0.82rem;">' + escapeHtml(d.domain) + '</code></td>';
+            html += '<td>' + d.count + '</td>';
+            html += '<td>' + d.providers.map(providerPill).join(' ') + '</td>';
+            html += '<td>' + (d.appears_in_competitor_wins ? '<span class="comp-win-icon" title="Appears when competitor wins">&#9888;</span>' : '-') + '</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table></div>';
+        if (cg.domains.length > TABLE_LIMIT) {
+            html += '<p style="margin:0.5rem 0 0;font-size:0.82rem;color:var(--muted);">Showing top ' + TABLE_LIMIT + ' of ' + cg.domains.length + ' domains</p>';
+        }
+        html += '</div>';
+    }
+
+    html += '</div>';
+
+    // Full URL table
+    if (citationsData && citationsData.citations && citationsData.citations.length) {
+        html += '<div class="card" style="margin-top:1rem;">';
+        html += '<h3 style="margin-bottom:0.75rem;">All Cited URLs (' + citationsData.total + ' total)</h3>';
+        html += '<div style="overflow-x:auto;"><table class="serp-table"><thead><tr>';
+        html += '<th>URL</th><th>Domain</th><th>Count</th><th>Providers</th>';
+        html += '</tr></thead><tbody>';
+        citationsData.citations.forEach(function(c) {
+            html += '<tr>';
+            html += '<td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">';
+            html += '<a href="' + escapeHtml(c.url) + '" target="_blank" style="color:var(--accent);font-size:0.82rem;">' + escapeHtml(c.url) + '</a></td>';
+            html += '<td><code style="font-size:0.8rem;">' + escapeHtml(c.domain) + '</code></td>';
+            html += '<td>' + c.count + '</td>';
+            html += '<td>' + c.providers.map(providerPill).join(' ') + '</td>';
+            html += '</tr>';
+        });
+        html += '</tbody></table></div></div>';
+    }
+
+    panel.innerHTML = html;
+    renderNetworkChart(cg);
+}
+
+function renderNetworkChart(cg) {
+    var container = document.getElementById('networkChartContainer');
+    if (!container || !cg || !cg.domains || !cg.domains.length) {
+        if (container) container.innerHTML = '<div class="llm-dash__empty" style="padding:2rem;"><p>No graph data</p></div>';
+        return;
+    }
+
+    // Properly dispose any existing instance on this container
+    var existing = echarts.getInstanceByDom(container);
+    if (existing) existing.dispose();
+    networkChart = null;
+
+    // Defer init to next frame so the browser has finished layout after innerHTML
+    requestAnimationFrame(function() {
+        var c = document.getElementById('networkChartContainer');
+        if (!c) return;
+        // Dispose again in case another call snuck in
+        var ex2 = echarts.getInstanceByDom(c);
+        if (ex2) ex2.dispose();
+
+        networkChart = echarts.init(c, 'dark');
+
+        // Build nodes: domains + providers
+        var nodes = [];
+        var links = [];
+        var providerSet = new Set();
+
+        cg.domains.forEach(function(d) {
+            d.providers.forEach(function(p) { providerSet.add(p); });
+        });
+
+        // Provider nodes (center)
+        var provArr = Array.from(providerSet);
+        provArr.forEach(function(p, i) {
+            nodes.push({
+                id: 'prov_' + p, name: p,
+                symbolSize: 30,
+                category: 0,
+                itemStyle: { color: PROVIDER_COLORS[p] || COLORS[i % COLORS.length] },
+            });
+        });
+
+        // Domain nodes
+        var maxCount = Math.max.apply(null, cg.domains.map(function(d) { return d.count; }));
+        cg.domains.slice(0, 30).forEach(function(d, i) {
+            var size = 10 + (d.count / Math.max(maxCount, 1)) * 30;
+            nodes.push({
+                id: 'dom_' + d.domain, name: d.domain,
+                symbolSize: size,
+                category: d.appears_in_competitor_wins ? 2 : 1,
+                itemStyle: { color: d.appears_in_competitor_wins ? '#f87171' : '#60a5fa' },
+            });
+
+            d.providers.forEach(function(p) {
+                links.push({ source: 'prov_' + p, target: 'dom_' + d.domain, lineStyle: { width: 1, opacity: 0.3 } });
+            });
+        });
+
+        networkChart.setOption({
+            backgroundColor: 'transparent',
+            tooltip: { trigger: 'item', formatter: function(p) { return p.data.name + (p.data.symbolSize ? ' (' + Math.round(p.data.symbolSize) + ')' : ''); } },
+            legend: { show: false },
+            series: [{
+                type: 'graph', layout: 'force', roam: true,
+                force: { repulsion: 120, edgeLength: [60, 160], gravity: 0.1 },
+                data: nodes, links: links,
+                label: { show: true, fontSize: 9, color: '#a0aec0', position: 'bottom' },
+                lineStyle: { curveness: 0.1 },
+                emphasis: { focus: 'adjacency', lineStyle: { width: 3 } },
+            }],
+        });
+
+        // Attach resize listener only once
+        if (!_networkResizeAttached) {
+            _networkResizeAttached = true;
+            window.addEventListener('resize', function() { networkChart && networkChart.resize(); });
+        }
+    });
+}
+
+/* ================================================================
+   TAB 5: GEO Action Center
+   ================================================================ */
+async function renderGeo() {
+    var panel = document.getElementById('panel-geo');
+
+    var resp = await apiFetch('/api/v1/llm/geo-advisor/' + PROJECT_ID + '?days=' + selectedDays);
+    var geoData = resp && resp.ok ? await resp.json() : null;
+
+    if (!geoData || !geoData.insights || !geoData.insights.length) {
+        panel.innerHTML = '<div class="llm-dash__empty">'
+            + '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>'
+            + '<p>No issues detected. Your brand visibility looks good!</p></div>';
+        return;
+    }
+
+    var insights = geoData.insights;
+    var critical = insights.filter(function(i) { return i.severity === 'critical'; }).length;
+    var warning = insights.filter(function(i) { return i.severity === 'warning'; }).length;
+    var info = insights.filter(function(i) { return i.severity === 'info'; }).length;
+
+    var html = '';
+
+    // Summary
+    html += '<div class="geo-summary">';
+    if (critical) html += '<div class="geo-summary__item"><span class="severity-badge severity-badge--critical">critical</span> ' + critical + '</div>';
+    if (warning) html += '<div class="geo-summary__item"><span class="severity-badge severity-badge--warning">warning</span> ' + warning + '</div>';
+    if (info) html += '<div class="geo-summary__item"><span class="severity-badge severity-badge--info">info</span> ' + info + '</div>';
+    html += '</div>';
+
+    // Cards
+    html += '<div class="geo-grid">';
+    // Sort: critical first, then warning, then info
+    var order = { critical: 0, warning: 1, info: 2 };
+    insights.sort(function(a, b) { return (order[a.severity]||9) - (order[b.severity]||9); });
+
+    insights.forEach(function(ins) {
+        html += '<div class="geo-card geo-card--' + ins.severity + '">';
+        html += '<div class="geo-card__header">';
+        html += severityBadge(ins.severity);
+        html += '<span class="geo-card__title">' + escapeHtml(ins.title_ru) + '</span>';
+        html += '</div>';
+        html += '<div class="geo-card__description">' + escapeHtml(ins.description_ru) + '</div>';
+        html += '<div class="geo-card__recommendation">' + escapeHtml(ins.recommendation_ru) + '</div>';
+        html += '</div>';
+    });
+    html += '</div>';
+
+    panel.innerHTML = html;
+}
+
+/* ================================================================
+   TAB 6: Response Inspector
+   ================================================================ */
+let inspectorOffset = 0;
+let inspectorProvider = '';
+let inspectorScenario = '';
+let inspectorTotal = 0;
+
+function renderInspector() {
+    inspectorOffset = 0;
+    // Keep inspectorProvider and inspectorScenario if set by heatmap drill-down
+    loadInspectorPage();
+}
+
+async function loadInspectorPage() {
+    var panel = document.getElementById('panel-inspector');
+
+    var params = 'days=' + selectedDays + '&offset=' + inspectorOffset + '&limit=25';
+    if (inspectorProvider) params += '&provider=' + inspectorProvider;
+    if (inspectorScenario) params += '&category=' + encodeURIComponent(inspectorScenario);
+
+    var resp = await apiFetch('/api/v1/llm/details/' + PROJECT_ID + '?' + params);
+    if (!resp || !resp.ok) {
+        panel.innerHTML = '<div class="llm-dash__empty"><p>No response data available.</p></div>';
+        return;
+    }
+    var data = await resp.json();
+    inspectorTotal = data.total;
+
+    var html = '';
+
+    // Filter bar
+    html += '<div class="filter-bar">';
+    html += '<select onchange="inspectorScenario=this.value;inspectorOffset=0;loadInspectorPage();">';
+    html += '<option value="">All scenarios</option>';
+    availableCategories.forEach(function(cat) {
+        html += '<option value="' + escapeHtml(cat) + '"' + (inspectorScenario===cat?' selected':'') + '>' + escapeHtml(cat) + '</option>';
+    });
+    html += '</select>';
+    html += '<select onchange="inspectorProvider=this.value;inspectorOffset=0;loadInspectorPage();">';
+    html += '<option value="">All providers</option>';
+    ['chatgpt','gemini','deepseek','yandexgpt','perplexity','gigachat'].forEach(function(p) {
+        html += '<option value="' + p + '"' + (inspectorProvider===p?' selected':'') + '>' + p + '</option>';
+    });
+    html += '</select>';
+    if (inspectorProvider || inspectorScenario) {
+        html += '<button class="btn btn-sm" onclick="inspectorProvider=\'\';inspectorScenario=\'\';inspectorOffset=0;loadInspectorPage();" style="font-size:0.78rem;">Clear filters</button>';
+    }
+    html += '<span style="font-size:0.85rem;color:var(--text-secondary);">' + data.total + ' responses</span>';
+    html += '</div>';
+
+    // Table
+    html += '<div class="card"><div style="overflow-x:auto;">';
+    html += '<table class="serp-table"><thead><tr>';
+    html += '<th>Date</th><th>Provider</th><th>Model</th><th>Brand</th><th>Type</th><th>Cost</th><th></th>';
+    html += '</tr></thead><tbody>';
+
+    if (!data.items || !data.items.length) {
+        html += '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);">No responses</td></tr>';
+    } else {
+        data.items.forEach(function(s) {
+            html += '<tr style="cursor:pointer;" onclick="openInspectorModal(' + s.id + ',' + s.llm_query_id + ')">';
+            html += '<td style="white-space:nowrap;">' + s.date + '</td>';
+            html += '<td>' + providerPill(s.llm_provider) + '</td>';
+            html += '<td style="font-size:0.8rem;">' + escapeHtml(s.llm_model || '-') + '</td>';
+            html += '<td>' + (s.brand_mentioned ? '<span style="color:' + tc('green') + ';">&#10003;</span>' : '<span style="color:' + tc('muted') + ';">-</span>') + '</td>';
+            html += '<td>' + mentionBadge(s.mention_type) + '</td>';
+            html += '<td>$' + (s.cost_usd || 0).toFixed(4) + '</td>';
+            html += '<td><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg></td>';
+            html += '</tr>';
+        });
+    }
+    html += '</tbody></table></div>';
+
+    // Pagination
+    if (data.total > 25) {
+        var totalPages = Math.ceil(data.total / 25);
+        var currentPage = Math.floor(inspectorOffset / 25) + 1;
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:0.75rem;font-size:0.85rem;">';
+        html += '<span style="color:var(--text-secondary);">Page ' + currentPage + ' of ' + totalPages + '</span>';
+        html += '<div style="display:flex;gap:0.5rem;">';
+        if (inspectorOffset > 0) {
+            html += '<button class="btn btn-sm" onclick="inspectorOffset-=25;loadInspectorPage();">Prev</button>';
+        }
+        if (inspectorOffset + 25 < data.total) {
+            html += '<button class="btn btn-sm" onclick="inspectorOffset+=25;loadInspectorPage();">Next</button>';
+        }
+        html += '</div></div>';
+    }
+
+    html += '</div>';
+    panel.innerHTML = html;
+}
+
+async function openInspectorModal(snapshotId, queryId) {
+    var modal = document.getElementById('inspectorModal');
+    var body = document.getElementById('inspectorModalBody');
+    modal.style.display = 'flex';
+    body.innerHTML = '<p class="muted">Loading...</p>';
+
+    // Fetch the exact snapshot by ID (fixes provider mismatch bug)
+    var snapshot = null;
+    try {
+        var snapResp = await apiFetch('/api/v1/llm/snapshot/' + snapshotId);
+        if (snapResp && snapResp.ok) {
+            snapshot = await snapResp.json();
+        }
+    } catch (e) {
+        body.innerHTML = '<p class="muted">Snapshot not found (error: ' + e.message + ').</p>';
+        return;
+    }
+
+    if (!snapshot) {
+        body.innerHTML = '<p class="muted">Snapshot not found.</p>';
+        return;
+    }
+
+    // query_text is now included in the snapshot response
+    var queryText = snapshot.query_text || '';
+
+    var html = '<div class="response-split">';
+
+    // Left: metadata
+    html += '<div class="response-meta"><dl>';
+    html += '<dt>Query</dt><dd>' + escapeHtml(queryText || 'N/A') + '</dd>';
+    html += '<dt>Provider</dt><dd>' + providerPill(snapshot.llm_provider) + '</dd>';
+    html += '<dt>Model</dt><dd>' + escapeHtml(snapshot.llm_model || '-') + '</dd>';
+    html += '<dt>Date</dt><dd>' + snapshot.date + '</dd>';
+    html += '<dt>Brand Mentioned</dt><dd>' + (snapshot.brand_mentioned ? '<span style="color:' + tc('green') + ';">Yes</span>' : 'No') + '</dd>';
+    html += '<dt>Mention Type</dt><dd>' + mentionBadge(snapshot.mention_type) + '</dd>';
+
+    if (snapshot.mention_context) {
+        html += '<dt>Context</dt><dd style="font-size:0.8rem;font-style:italic;color:var(--text-secondary);">"' + escapeHtml(snapshot.mention_context) + '"</dd>';
+    }
+
+    if (snapshot.competitor_mentions) {
+        html += '<dt>Competitors</dt><dd>';
+        for (var comp in snapshot.competitor_mentions) {
+            var mentioned = snapshot.competitor_mentions[comp];
+            html += '<div>' + escapeHtml(comp) + ': ' + (mentioned ? '<span style="color:' + tc('yellow') + ';">mentioned</span>' : '<span style="color:' + tc('muted') + ';">not found</span>') + '</div>';
+        }
+        html += '</dd>';
+    }
+
+    if (snapshot.cited_urls && snapshot.cited_urls.length) {
+        html += '<dt>Cited URLs</dt><dd>';
+        snapshot.cited_urls.forEach(function(u) {
+            html += '<div style="margin-bottom:2px;"><a href="' + escapeHtml(u) + '" target="_blank" style="color:var(--accent);font-size:0.78rem;word-break:break-all;">' + escapeHtml(u) + '</a></div>';
+        });
+        html += '</dd>';
+    }
+
+    html += '<dt>Tokens</dt><dd>' + (snapshot.response_tokens != null ? snapshot.response_tokens : '-') + '</dd>';
+    html += '<dt>Cost</dt><dd>$' + (snapshot.cost_usd != null ? snapshot.cost_usd : 0).toFixed(4) + '</dd>';
+    html += '</dl></div>';
+
+    // Right: highlighted response
+    html += '<div class="response-body">';
+    if (snapshot.raw_response) {
+        html += highlightResponse(snapshot.raw_response, brandName, competitors);
+    } else if (snapshot.raw_response === '') {
+        html += '<span class="muted">LLM returned an empty response.</span>';
+    } else {
+        html += '<span class="muted">No raw response stored.</span>';
+    }
+    html += '</div>';
+
+    html += '</div>';
+
+    document.getElementById('inspectorModalTitle').textContent = 'Response: ' + snapshot.llm_provider + ' / ' + snapshot.date;
+    body.innerHTML = html;
+}
+
+function closeInspectorModal() {
+    document.getElementById('inspectorModal').style.display = 'none';
+}
+
+/* ---- Smart Highlighter ---- */
+function highlightResponse(text, brand, comps) {
+    var html = escapeHtml(text);
+
+    // Highlight brand (green)
+    if (brand) {
+        try {
+            html = html.replace(new RegExp('\\b(' + escapeRegex(brand) + ')\\b', 'gi'),
+                '<mark class="highlight-brand">$1</mark>');
+        } catch(e) {}
+    }
+
+    // Highlight competitors (yellow)
+    if (comps && comps.length) {
+        comps.forEach(function(c) {
+            try {
+                html = html.replace(new RegExp('\\b(' + escapeRegex(c) + ')\\b', 'gi'),
+                    '<mark class="highlight-competitor">$1</mark>');
+            } catch(e) {}
+        });
+    }
+
+    // Highlight negative keywords (red underline)
+    html = html.replace(/\b(avoid|issues?\b|problems?\b|drawback|downside|not recommend|worse|inferior|lacking)\b/gi,
+        '<span class="highlight-negative">$&</span>');
+
+    return html;
+}
+</script>
+{% endblock %}

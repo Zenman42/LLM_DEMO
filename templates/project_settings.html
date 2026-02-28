@@ -1,0 +1,679 @@
+{% extends "base.html" %}
+
+{% block title %}Project Settings — LLM Tracker{% endblock %}
+{% block page_title %}Project Settings{% endblock %}
+
+{% block content %}
+<!-- Context Bar -->
+<div class="llm-dash__context-bar">
+    <div style="display:flex;align-items:center;gap:1rem;">
+        <a href="/project/{{ project_id }}" class="back-link">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+            Back to Project
+        </a>
+        <span class="llm-dash__project-name" id="projectName">Loading...</span>
+    </div>
+</div>
+
+<div class="settings-cards">
+
+    <!-- Card 1: General Settings -->
+    <div class="card">
+        <h2>General Settings</h2>
+        <div class="form-grid">
+            <div class="form-group">
+                <label for="settName">Project Name</label>
+                <input type="text" id="settName" class="form-input" placeholder="My Website">
+            </div>
+            <div class="form-group">
+                <label for="settDomain">Domain</label>
+                <input type="text" id="settDomain" class="form-input" placeholder="example.com">
+            </div>
+            <div class="form-group">
+                <label for="settEngine">Search Engine</label>
+                <select id="settEngine" class="form-input">
+                    <option value="both">Both</option>
+                    <option value="google">Google</option>
+                    <option value="yandex">Yandex</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="settRegionYandex">Yandex Region</label>
+                <select id="settRegionYandex" class="form-input">
+                    <option value="213">Loading...</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="settRegionGoogle">Google Region</label>
+                <select id="settRegionGoogle" class="form-input">
+                    <option value="">-- Not set --</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="settYwm">YWM Host ID</label>
+                <input type="text" id="settYwm" class="form-input" placeholder="https:example.com:443">
+            </div>
+            <div class="form-group">
+                <label for="settGsc">GSC Site URL</label>
+                <input type="text" id="settGsc" class="form-input" placeholder="sc-domain:example.com">
+            </div>
+            <div class="form-group">
+                <label class="toggle-label">
+                    <input type="checkbox" id="settActive">
+                    <span>Active</span>
+                </label>
+            </div>
+        </div>
+    </div>
+
+    <!-- Card 2: Brand & LLM Profile -->
+    <div class="card">
+        <h2>Brand &amp; LLM Profile</h2>
+        <div class="form-grid">
+            <div class="form-group">
+                <label for="settBrandName">Brand Name</label>
+                <input type="text" id="settBrandName" class="form-input" placeholder="Your Brand">
+            </div>
+            <div class="form-group">
+                <label>Market</label>
+                <div class="market-toggle">
+                    <button type="button" class="market-btn active" data-market="ru" onclick="setMarket('ru')">&#x1f1f7;&#x1f1fa; Russian</button>
+                    <button type="button" class="market-btn" data-market="en" onclick="setMarket('en')">&#x1f1ec;&#x1f1e7; English</button>
+                </div>
+            </div>
+            <div class="form-group form-group--full">
+                <label for="settBrandDesc">Brand Description</label>
+                <textarea id="settBrandDesc" class="form-input" rows="5" style="resize:vertical;" placeholder="Company description..."></textarea>
+            </div>
+            <div class="form-group">
+                <label>Brand Aliases &amp; Synonyms</label>
+                <div class="chip-input-container" id="aliasChips">
+                    <input type="text" class="chip-text-input" id="aliasInput" placeholder="Add alias and press Enter">
+                </div>
+                <div class="field-hint">Abbreviations, transliterations, misspellings</div>
+            </div>
+            <div class="form-group">
+                <label for="settGeo">Geography</label>
+                <input type="text" id="settGeo" class="form-input" placeholder="Russia, Moscow, etc.">
+            </div>
+            <div class="form-group">
+                <label class="toggle-label">
+                    <input type="checkbox" id="settTrackLlm">
+                    <span>Track LLM Visibility</span>
+                </label>
+            </div>
+            <div class="form-group">
+                <label class="toggle-label">
+                    <input type="checkbox" id="settTrackAIO">
+                    <span>Track AI Overview</span>
+                </label>
+            </div>
+            <div class="form-group form-group--full">
+                <label>LLM Providers</label>
+                <div class="llm-provider-toggles">
+                    <button type="button" class="llm-toggle" data-llm="chatgpt" onclick="toggleLlm(this)">
+                        <span class="llm-dot" style="background:#10b981"></span> ChatGPT
+                    </button>
+                    <button type="button" class="llm-toggle" data-llm="deepseek" onclick="toggleLlm(this)">
+                        <span class="llm-dot" style="background:#3b82f6"></span> DeepSeek
+                    </button>
+                    <button type="button" class="llm-toggle" data-llm="yandexgpt" onclick="toggleLlm(this)">
+                        <span class="llm-dot" style="background:#f59e0b"></span> YandexGPT
+                    </button>
+                    <button type="button" class="llm-toggle" data-llm="gemini" onclick="toggleLlm(this)">
+                        <span class="llm-dot" style="background:#8b5cf6"></span> Gemini
+                    </button>
+                    <button type="button" class="llm-toggle" data-llm="perplexity" onclick="toggleLlm(this)">
+                        <span class="llm-dot" style="background:#ec4899"></span> Perplexity
+                    </button>
+                    <button type="button" class="llm-toggle" data-llm="gigachat" onclick="toggleLlm(this)">
+                        <span class="llm-dot" style="background:#f97316"></span> GigaChat
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Card 3: Competitors -->
+    <div class="card">
+        <h2>
+            Competitors <span class="field-count" id="compCount">0</span>
+            <a href="/project/{{ project_id }}/competitors" class="settings-link">Manage detailed &rarr;</a>
+        </h2>
+        <div class="chip-input-container" id="compChips">
+            <input type="text" class="chip-text-input" id="compInput" placeholder="Add competitor and press Enter">
+        </div>
+    </div>
+
+    <!-- Card 4: Scenarios / Categories -->
+    <div class="card">
+        <h2>
+            Scenarios / Categories <span class="field-count" id="catCount">0</span>
+            <a href="/project/{{ project_id }}/prompts" class="settings-link">Manage prompts &rarr;</a>
+        </h2>
+        <div class="chip-input-container" id="catChips">
+            <input type="text" class="chip-text-input" id="catInput" placeholder="Add scenario and press Enter">
+        </div>
+        <div class="field-hint">Customer use-case scenarios for prompt generation</div>
+    </div>
+
+    <!-- Card 5: Golden Facts & USPs -->
+    <div class="card">
+        <h2>Golden Facts &amp; USPs <span class="field-count" id="factCount">0</span></h2>
+        <div class="chip-input-container chip-input-tall" id="factChips">
+            <input type="text" class="chip-text-input" id="factInput" placeholder="e.g. 'Founded in 2010', 'Over 1M users'">
+        </div>
+        <div class="field-hint">Verifiable claims, key metrics, unique selling points</div>
+    </div>
+
+    <!-- Save -->
+    <div class="settings-save-bar">
+        <button type="button" class="btn btn-primary btn-lg" id="saveBtn" onclick="saveSettings()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            Save Settings
+        </button>
+        <span id="saveStatus" class="field-hint" style="margin-left:12px;"></span>
+    </div>
+
+    <!-- Maintenance -->
+    <div class="card">
+        <h2>Maintenance</h2>
+        <div class="danger-zone-row">
+            <div>
+                <strong>Re-consolidate entities</strong>
+                <p class="field-hint" style="margin:4px 0 0;">Re-run LLM entity clustering for today's data. Use after algorithm updates.</p>
+            </div>
+            <button type="button" class="btn btn-secondary" id="reconsolidateBtn" onclick="reconsolidate()">Re-consolidate</button>
+        </div>
+    </div>
+
+    <!-- Danger Zone -->
+    <div class="card card--danger">
+        <h2>Danger Zone</h2>
+        <div class="danger-zone-row">
+            <div>
+                <strong>Delete this project</strong>
+                <p class="field-hint" style="margin:4px 0 0;">All keywords, prompts, snapshots, and collected data will be permanently deleted.</p>
+            </div>
+            <button type="button" class="btn btn-danger" onclick="showDeleteModal()">Delete Project</button>
+        </div>
+    </div>
+
+</div>
+
+<!-- Delete Confirmation Modal -->
+<div class="modal-overlay" id="deleteModal">
+    <div class="modal-box">
+        <h3>Delete project?</h3>
+        <p>Enter the project name <strong id="deleteModalName"></strong> to confirm deletion.</p>
+        <input type="text" class="form-input" id="deleteConfirmInput" placeholder="Project name" autocomplete="off">
+        <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" onclick="hideDeleteModal()">Cancel</button>
+            <button type="button" class="btn btn-danger" id="deleteConfirmBtn" onclick="confirmDelete()" disabled>Delete</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ============================================================
+   Project Settings Page
+   ============================================================ */
+
+var PROJECT_ID = {{ project_id }};
+var regionsData = { yandex: [], google: [] };
+
+/* State arrays for chip inputs */
+var aliases = [];
+var competitors = [];
+var categories = [];
+var goldenFacts = [];
+var selectedLlms = [];
+var selectedMarket = 'ru';
+
+/* ---- Data Loading ---- */
+
+async function loadRegions() {
+    try {
+        var resp = await fetch('/api/v1/regions/');
+        if (resp.ok) regionsData = await resp.json();
+    } catch (e) {
+        console.warn('Failed to load regions:', e);
+    }
+    populateRegionSelect('settRegionGoogle', regionsData.google, '', false);
+    populateRegionSelect('settRegionYandex', regionsData.yandex, '213', true);
+}
+
+function populateRegionSelect(selectId, regions, defaultValue, isYandex) {
+    var sel = document.getElementById(selectId);
+    if (!sel) return;
+    sel.innerHTML = '<option value="">-- Not set --</option>';
+    (regions || []).forEach(function(r) {
+        var opt = document.createElement('option');
+        opt.value = r.code;
+        opt.textContent = r.name + ' (' + r.code + ')';
+        if (String(r.code) === String(defaultValue)) opt.selected = true;
+        sel.appendChild(opt);
+    });
+}
+
+async function loadProject() {
+    try {
+        var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID);
+        if (!resp || !resp.ok) {
+            showToast('Failed to load project', 'error');
+            return;
+        }
+        var data = await resp.json();
+        populateForm(data);
+    } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+    }
+}
+
+function populateForm(data) {
+    /* Header */
+    document.getElementById('projectName').textContent = data.name;
+    document.title = data.name + ' — Settings — LLM Tracker';
+
+    /* General */
+    document.getElementById('settName').value = data.name || '';
+    document.getElementById('settDomain').value = data.domain || '';
+    document.getElementById('settEngine').value = data.search_engine || 'both';
+    document.getElementById('settActive').checked = data.is_active !== false;
+
+    /* Regions — set value after options are populated */
+    var rg = document.getElementById('settRegionGoogle');
+    if (data.region_google) rg.value = data.region_google;
+    var ry = document.getElementById('settRegionYandex');
+    if (data.region_yandex) ry.value = String(data.region_yandex);
+
+    document.getElementById('settYwm').value = data.ywm_host_id || '';
+    document.getElementById('settGsc').value = data.gsc_site_url || '';
+
+    /* Brand & LLM */
+    document.getElementById('settBrandName').value = data.brand_name || '';
+    document.getElementById('settBrandDesc').value = data.brand_description || '';
+    document.getElementById('settGeo').value = data.geo || '';
+    document.getElementById('settTrackLlm').checked = !!data.track_llm;
+    document.getElementById('settTrackAIO').checked = !!data.track_ai_overview;
+
+    /* Market */
+    setMarket(data.market || 'ru');
+
+    /* LLM Providers */
+    selectedLlms = (data.llm_providers || []).slice();
+    document.querySelectorAll('.llm-toggle').forEach(function(btn) {
+        btn.classList.toggle('active', selectedLlms.indexOf(btn.dataset.llm) >= 0);
+    });
+
+    /* Chip arrays — modify in-place to preserve references */
+    aliases.length = 0;
+    (data.brand_aliases || []).forEach(function(v) { aliases.push(v); });
+    renderChips('aliasChips', aliases);
+
+    competitors.length = 0;
+    (data.competitors || []).forEach(function(v) { competitors.push(v); });
+    renderChips('compChips', competitors);
+
+    categories.length = 0;
+    (data.categories || []).forEach(function(v) {
+        /* categories can be strings or {name, description} objects */
+        categories.push(typeof v === 'string' ? v : (v.name || String(v)));
+    });
+    renderChips('catChips', categories);
+
+    goldenFacts.length = 0;
+    (data.golden_facts || []).forEach(function(v) { goldenFacts.push(v); });
+    renderChips('factChips', goldenFacts);
+
+    updateCounts();
+}
+
+/* ---- Chip Input ---- */
+
+function initChipInput(inputId, containerId, arr, maxItems) {
+    var input = document.getElementById(inputId);
+    if (!input) return;
+    maxItems = maxItems || 50;
+
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            var val = input.value.trim();
+            if (!val) return;
+            if (arr.length >= maxItems) {
+                showToast('Maximum ' + maxItems + ' items', 'warning');
+                return;
+            }
+            if (arr.some(function(x) { return x.toLowerCase() === val.toLowerCase(); })) {
+                showToast('Already added', 'warning');
+                input.value = '';
+                return;
+            }
+            arr.push(val);
+            input.value = '';
+            renderChips(containerId, arr);
+            updateCounts();
+        }
+    });
+}
+
+function renderChips(containerId, arr) {
+    var container = document.getElementById(containerId);
+    if (!container) return;
+    container.querySelectorAll('.chip').forEach(function(c) { c.remove(); });
+    var input = container.querySelector('.chip-text-input');
+    arr.forEach(function(val, idx) {
+        var chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.innerHTML = escapeHtml(val) + ' <button type="button" class="chip-remove" onclick="removeChip(\'' + containerId + '\',' + idx + ')">&times;</button>';
+        container.insertBefore(chip, input);
+    });
+}
+
+function removeChip(containerId, idx) {
+    var arr = chipArrayMap[containerId];
+    if (!arr) return;
+    arr.splice(idx, 1);
+    renderChips(containerId, arr);
+    updateCounts();
+}
+
+var chipArrayMap = {
+    'aliasChips': aliases,
+    'compChips': competitors,
+    'catChips': categories,
+    'factChips': goldenFacts,
+};
+/* Note: chipArrayMap references are set at module level.
+   Since we modify arrays in-place (arr.length = 0 + push), references stay valid. */
+
+function updateCounts() {
+    var el;
+    el = document.getElementById('compCount');
+    if (el) el.textContent = competitors.length;
+    el = document.getElementById('catCount');
+    if (el) el.textContent = categories.length;
+    el = document.getElementById('factCount');
+    if (el) el.textContent = goldenFacts.length;
+}
+
+/* ---- Market Toggle ---- */
+
+function setMarket(m) {
+    selectedMarket = m;
+    document.querySelectorAll('.market-btn').forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.market === m);
+    });
+}
+
+/* ---- LLM Provider Toggles ---- */
+
+function toggleLlm(btn) {
+    btn.classList.toggle('active');
+    var llm = btn.dataset.llm;
+    var idx = selectedLlms.indexOf(llm);
+    if (idx >= 0) selectedLlms.splice(idx, 1);
+    else selectedLlms.push(llm);
+}
+
+/* ---- Save ---- */
+
+async function saveSettings() {
+    var btn = document.getElementById('saveBtn');
+    var status = document.getElementById('saveStatus');
+    btn.disabled = true;
+    btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10" opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></path></svg> Saving...';
+    status.textContent = '';
+
+    var body = {
+        name: document.getElementById('settName').value.trim() || null,
+        domain: document.getElementById('settDomain').value.trim() || null,
+        search_engine: document.getElementById('settEngine').value,
+        region_google: document.getElementById('settRegionGoogle').value || null,
+        region_yandex: parseInt(document.getElementById('settRegionYandex').value) || 213,
+        ywm_host_id: document.getElementById('settYwm').value.trim() || null,
+        gsc_site_url: document.getElementById('settGsc').value.trim() || null,
+        is_active: document.getElementById('settActive').checked,
+        brand_name: document.getElementById('settBrandName').value.trim() || null,
+        brand_description: document.getElementById('settBrandDesc').value.trim() || null,
+        brand_aliases: aliases,
+        market: selectedMarket,
+        geo: document.getElementById('settGeo').value.trim() || null,
+        track_llm: document.getElementById('settTrackLlm').checked,
+        track_ai_overview: document.getElementById('settTrackAIO').checked,
+        llm_providers: selectedLlms,
+        competitors: competitors,
+        categories: categories,
+        golden_facts: goldenFacts,
+    };
+
+    try {
+        var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID, {
+            method: 'PUT',
+            body: JSON.stringify(body),
+        });
+
+        if (resp && resp.ok) {
+            showToast('Settings saved', 'success');
+            var updated = await resp.json();
+            populateForm(updated);
+        } else if (resp) {
+            var err = await resp.json().catch(function() { return {}; });
+            showToast(err.detail || 'Failed to save', 'error');
+        }
+    } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> Save Settings';
+    }
+}
+
+/* ---- Helpers ---- */
+
+function escapeHtml(text) {
+    var div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+/* ---- Delete Project ---- */
+
+function showDeleteModal() {
+    var name = document.getElementById('settName').value.trim() || 'this project';
+    document.getElementById('deleteModalName').textContent = '"' + name + '"';
+    document.getElementById('deleteConfirmInput').value = '';
+    document.getElementById('deleteConfirmBtn').disabled = true;
+    document.getElementById('deleteModal').classList.add('active');
+    document.getElementById('deleteConfirmInput').focus();
+}
+
+async function reconsolidate() {
+    var btn = document.getElementById('reconsolidateBtn');
+    btn.disabled = true;
+    btn.textContent = 'Starting...';
+
+    try {
+        var resp = await apiFetch('/api/v1/collection/projects/' + PROJECT_ID + '/reconsolidate', {
+            method: 'POST',
+        });
+        var data = await resp.json();
+        if (resp.ok) {
+            showToast(data.message || 'Re-consolidation started', 'success');
+            btn.textContent = 'Started ✓';
+            setTimeout(function() {
+                btn.disabled = false;
+                btn.textContent = 'Re-consolidate';
+            }, 5000);
+        } else {
+            showToast(data.detail || 'Failed to start', 'error');
+            btn.disabled = false;
+            btn.textContent = 'Re-consolidate';
+        }
+    } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+        btn.disabled = false;
+        btn.textContent = 'Re-consolidate';
+    }
+}
+
+function hideDeleteModal() {
+    document.getElementById('deleteModal').classList.remove('active');
+}
+
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') hideDeleteModal();
+});
+
+document.addEventListener('input', function(e) {
+    if (e.target.id === 'deleteConfirmInput') {
+        var expected = (document.getElementById('settName').value || '').trim();
+        document.getElementById('deleteConfirmBtn').disabled =
+            e.target.value.trim() !== expected;
+    }
+});
+
+async function confirmDelete() {
+    var btn = document.getElementById('deleteConfirmBtn');
+    btn.disabled = true;
+    btn.textContent = 'Deleting...';
+
+    try {
+        var resp = await apiFetch('/api/v1/projects/' + PROJECT_ID, {
+            method: 'DELETE',
+        });
+        if (resp && (resp.ok || resp.status === 204)) {
+            showToast('Project deleted', 'success');
+            setTimeout(function() { window.location.href = '/'; }, 600);
+        } else {
+            var err = await resp.json().catch(function() { return {}; });
+            showToast(err.detail || 'Failed to delete', 'error');
+            btn.disabled = false;
+            btn.textContent = 'Delete';
+        }
+    } catch (e) {
+        showToast('Error: ' + e.message, 'error');
+        btn.disabled = false;
+        btn.textContent = 'Delete';
+    }
+}
+
+/* ---- Init ---- */
+
+document.addEventListener('DOMContentLoaded', async function() {
+    await loadRegions();
+    await loadProject();
+    initChipInput('aliasInput', 'aliasChips', aliases, 20);
+    initChipInput('compInput', 'compChips', competitors, 10);
+    initChipInput('catInput', 'catChips', categories, 20);
+    initChipInput('factInput', 'factChips', goldenFacts, 50);
+});
+</script>
+
+<style>
+.settings-cards {
+    max-width: 900px;
+}
+.settings-cards .card {
+    margin-bottom: 20px;
+}
+.settings-cards .card h2 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.form-group--full {
+    grid-column: 1 / -1;
+}
+.settings-link {
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--accent);
+    text-decoration: none;
+    margin-left: auto;
+}
+.settings-link:hover {
+    text-decoration: underline;
+}
+.settings-save-bar {
+    display: flex;
+    align-items: center;
+    padding: 20px 0 40px;
+}
+
+/* Danger Zone */
+.card--danger {
+    border: 1px solid var(--danger, #ef4444);
+}
+.card--danger h2 {
+    color: var(--danger, #ef4444);
+}
+.danger-zone-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+}
+.btn-danger {
+    background: var(--danger, #ef4444);
+    color: #fff;
+    border: none;
+    padding: 8px 20px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.btn-danger:hover {
+    background: #dc2626;
+}
+.btn-danger:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Delete Modal */
+.modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+}
+.modal-overlay.active {
+    display: flex;
+}
+.modal-box {
+    background: var(--card-bg, #1e1e2e);
+    border-radius: 12px;
+    padding: 28px;
+    max-width: 440px;
+    width: 90%;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+}
+.modal-box h3 {
+    margin: 0 0 12px;
+    font-size: 18px;
+}
+.modal-box p {
+    margin: 0 0 16px;
+    color: var(--text-secondary, #a0a0b0);
+    font-size: 14px;
+    line-height: 1.5;
+}
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 20px;
+}
+</style>
+{% endblock %}

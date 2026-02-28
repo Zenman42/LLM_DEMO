@@ -1,0 +1,616 @@
+{% extends "base.html" %}
+
+{% block title %}Settings — LLM Tracker{% endblock %}
+{% block page_title %}Settings{% endblock %}
+
+{% block content %}
+<!-- Add Project Form -->
+<div class="card">
+    <h2>Add Project</h2>
+    <form onsubmit="addProject(event)" class="form-grid">
+        <div class="form-group">
+            <label>Project Name</label>
+            <input type="text" id="newProjName" required placeholder="My Website">
+        </div>
+        <div class="form-group">
+            <label>Domain</label>
+            <input type="text" id="newProjDomain" required placeholder="example.com">
+        </div>
+        <div class="form-group">
+            <label>Search Engine</label>
+            <select id="newProjEngine">
+                <option value="both">Both</option>
+                <option value="google">Google</option>
+                <option value="yandex">Yandex</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Google Region</label>
+            <select id="newProjRegionGoogle">
+                <option value="">-- Not set --</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Yandex Region</label>
+            <select id="newProjRegionYandex">
+                <option value="213">Loading...</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>YWM Host ID</label>
+            <input type="text" id="newProjYwm" placeholder="https:example.com:443">
+        </div>
+        <div class="form-group">
+            <label>GSC Site URL</label>
+            <input type="text" id="newProjGsc" placeholder="sc-domain:example.com">
+        </div>
+        <div class="form-group">
+            <label>Brand Name</label>
+            <input type="text" id="newProjBrand" placeholder="Your Brand">
+        </div>
+        <div class="form-group">
+            <label><input type="checkbox" id="newProjTrackLlm"> Track LLM Visibility</label>
+        </div>
+        <div class="form-group" id="newProjLlmProviders" style="display:none;">
+            <label>LLM Providers</label>
+            <div class="checkbox-group">
+                <label><input type="checkbox" value="chatgpt" checked> ChatGPT</label>
+                <label><input type="checkbox" value="deepseek"> DeepSeek</label>
+                <label><input type="checkbox" value="perplexity"> Perplexity</label>
+                <label><input type="checkbox" value="yandexgpt"> YandexGPT</label>
+                <label><input type="checkbox" value="gemini"> Gemini</label>
+                <label><input type="checkbox" value="gigachat"> GigaChat</label>
+            </div>
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Add Project</button>
+        </div>
+    </form>
+</div>
+
+<!-- Existing Projects (loaded dynamically) -->
+<div id="projectsList"></div>
+
+<!-- Data Source Keys -->
+<div class="card admin-only" id="dataSourceKeysCard">
+    <h2>Data Source Keys</h2>
+    <p class="muted" style="margin-bottom:1rem;">API keys for SERP tracking, webmaster tools and notifications. Keys are encrypted at rest.</p>
+    <div id="dataKeysStatus">Loading...</div>
+    <form onsubmit="saveDataKeys(event)" class="form-grid" style="margin-top:1rem;">
+        <div class="form-group">
+            <label>JustMagic API Key</label>
+            <input type="password" id="dataKeyJm" placeholder="API key from just-magic.org">
+            <span class="form-hint" id="dataKeyJmStatus"></span>
+        </div>
+        <div class="form-group">
+            <label>Yandex Webmaster Token</label>
+            <input type="password" id="dataKeyYwm" placeholder="OAuth token">
+            <span class="form-hint" id="dataKeyYwmStatus"></span>
+        </div>
+        <div class="form-group">
+            <label>Yandex Webmaster Host ID</label>
+            <input type="text" id="dataKeyYwmHost" placeholder="https://example.com:443">
+            <span class="form-hint" id="dataKeyYwmHostStatus"></span>
+        </div>
+        <div class="form-group">
+            <label>Google Search Console Credentials (JSON)</label>
+            <textarea id="dataKeyGsc" rows="3" placeholder='{"type":"service_account",...}'></textarea>
+            <span class="form-hint" id="dataKeyGscStatus"></span>
+        </div>
+        <div class="form-group">
+            <label>Telegram Bot Token</label>
+            <input type="password" id="dataKeyTgBot" placeholder="123456:ABC-DEF...">
+            <span class="form-hint" id="dataKeyTgBotStatus"></span>
+        </div>
+        <div class="form-group">
+            <label>Telegram Chat ID</label>
+            <input type="text" id="dataKeyTgChat" placeholder="-1001234567890">
+            <span class="form-hint" id="dataKeyTgChatStatus"></span>
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save Data Source Keys</button>
+        </div>
+    </form>
+</div>
+
+<!-- LLM API Keys -->
+<div class="card admin-only" id="llmApiKeysCard">
+    <h2>LLM API Keys</h2>
+    <p class="muted" style="margin-bottom:1rem;">Configure API keys for LLM providers. Keys are encrypted at rest.</p>
+    <div id="llmKeysStatus">Loading...</div>
+    <form onsubmit="saveLlmKeys(event)" class="form-grid" style="margin-top:1rem;">
+        <div class="form-group">
+            <label>OpenAI API Key (ChatGPT)</label>
+            <input type="password" id="llmKeyOpenai" placeholder="sk-...">
+            <span class="form-hint" id="llmKeyOpenaiStatus"></span>
+        </div>
+        <div class="form-group">
+            <label>DeepSeek API Key</label>
+            <input type="password" id="llmKeyDeepseek" placeholder="sk-...">
+            <span class="form-hint" id="llmKeyDeepseekStatus"></span>
+        </div>
+        <div class="form-group">
+            <label>Perplexity API Key</label>
+            <input type="password" id="llmKeyPerplexity" placeholder="pplx-...">
+            <span class="form-hint" id="llmKeyPerplexityStatus"></span>
+        </div>
+        <div class="form-group">
+            <label>YandexGPT API Key</label>
+            <input type="password" id="llmKeyYandexgpt" placeholder="AQV...">
+            <span class="form-hint" id="llmKeyYandexgptStatus"></span>
+        </div>
+        <div class="form-group">
+            <label>YandexGPT Folder ID</label>
+            <input type="text" id="llmKeyYandexgptFolder" placeholder="b1g...">
+            <span class="form-hint" id="llmKeyYandexgptFolderStatus"></span>
+        </div>
+        <div class="form-group">
+            <label>Google Gemini API Key</label>
+            <input type="password" id="llmKeyGemini" placeholder="AIza...">
+            <span class="form-hint" id="llmKeyGeminiStatus"></span>
+        </div>
+        <div class="form-group">
+            <label>GigaChat Authorization Key</label>
+            <input type="password" id="llmKeyGigachat" placeholder="base64 credentials...">
+            <span class="form-hint" id="llmKeyGigachatStatus"></span>
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save LLM Keys</button>
+        </div>
+    </form>
+</div>
+
+<!-- Collection Schedule -->
+<div class="card">
+    <h2>Collection Schedule</h2>
+    <form onsubmit="updateSchedule(event)" class="form-grid">
+        <div class="form-group">
+            <label>Hour (UTC, 0-23)</label>
+            <input type="number" id="scheduleHour" min="0" max="23">
+        </div>
+        <div class="form-group">
+            <label>Minute (0-59)</label>
+            <input type="number" id="scheduleMinute" min="0" max="59">
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save Schedule</button>
+        </div>
+    </form>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+var regionsData = { yandex: [], google: [] };
+
+// Toggle LLM providers visibility
+document.getElementById('newProjTrackLlm').addEventListener('change', function() {
+    document.getElementById('newProjLlmProviders').style.display = this.checked ? '' : 'none';
+});
+
+async function loadRegions() {
+    try {
+        var resp = await fetch('/api/v1/regions/');
+        if (resp.ok) {
+            regionsData = await resp.json();
+        }
+    } catch (e) {
+        console.warn('Failed to load regions:', e);
+    }
+    populateRegionSelect('newProjRegionGoogle', regionsData.google, '', false);
+    populateRegionSelect('newProjRegionYandex', regionsData.yandex, '213', true);
+}
+
+function populateRegionSelect(selectId, regions, defaultValue, isYandex) {
+    var sel = document.getElementById(selectId);
+    if (!sel) return;
+    sel.innerHTML = '<option value="">-- Not set --</option>';
+    regions.forEach(function(r) {
+        var opt = document.createElement('option');
+        opt.value = r.code;
+        opt.textContent = r.name + ' (' + r.code + ')';
+        if (String(r.code) === String(defaultValue)) opt.selected = true;
+        sel.appendChild(opt);
+    });
+}
+
+async function loadSettings() {
+    await loadRegions();
+
+    // Wait for role to be loaded (from base.html loadCurrentUser)
+    await waitForRole();
+
+    // Load projects + schedule (always), credentials only for admin
+    var fetches = [
+        apiFetch('/api/v1/projects/'),
+        apiFetch('/api/v1/settings/schedule'),
+    ];
+    if (isAdmin()) {
+        fetches.push(apiFetch('/api/v1/settings/credentials'));
+    }
+
+    var results = await Promise.all(fetches);
+    var projResp = results[0];
+    var schedResp = results[1];
+    var credResp = isAdmin() ? results[2] : null;
+
+    if (projResp) {
+        var projects = await projResp.json();
+        renderProjects(projects);
+    }
+
+    if (credResp && credResp.ok) {
+        var creds = await credResp.json();
+        renderCredentialsStatus(creds);
+    }
+
+    if (schedResp) {
+        var sched = await schedResp.json();
+        document.getElementById('scheduleHour').value = sched.collection_hour;
+        document.getElementById('scheduleMinute').value = sched.collection_minute;
+    }
+}
+
+function renderCredentialsStatus(creds) {
+    // Data source keys status
+    var dataStatusEl = document.getElementById('dataKeysStatus');
+    var dataKeys = [
+        { name: 'JustMagic', field: 'justmagic_api_key', statusEl: 'dataKeyJmStatus' },
+        { name: 'YWM Token', field: 'ywm_token', statusEl: 'dataKeyYwmStatus' },
+        { name: 'YWM Host', field: 'ywm_host_id_set', statusEl: 'dataKeyYwmHostStatus' },
+        { name: 'GSC', field: 'gsc_credentials', statusEl: 'dataKeyGscStatus' },
+        { name: 'TG Bot', field: 'telegram_bot_token', statusEl: 'dataKeyTgBotStatus' },
+        { name: 'TG Chat', field: 'telegram_chat_id', statusEl: 'dataKeyTgChatStatus' },
+    ];
+    var dataHtml = '<div style="display:flex;gap:12px;flex-wrap:wrap;">';
+    dataKeys.forEach(function(k) {
+        var configured = creds[k.field];
+        dataHtml += '<span class="badge ' + (configured ? 'badge-active' : 'badge-inactive') + '">' + k.name + ': ' + (configured ? 'Configured' : 'Not set') + '</span>';
+        var hintEl = document.getElementById(k.statusEl);
+        if (hintEl) hintEl.textContent = configured ? 'Currently configured. Leave blank to keep.' : '';
+    });
+    dataHtml += '</div>';
+    dataStatusEl.innerHTML = dataHtml;
+
+    // LLM keys status
+    var statusEl = document.getElementById('llmKeysStatus');
+    var keys = [
+        { name: 'ChatGPT', field: 'openai_api_key', statusEl: 'llmKeyOpenaiStatus' },
+        { name: 'DeepSeek', field: 'deepseek_api_key', statusEl: 'llmKeyDeepseekStatus' },
+        { name: 'Perplexity', field: 'perplexity_api_key', statusEl: 'llmKeyPerplexityStatus' },
+        { name: 'YandexGPT', field: 'yandexgpt_api_key', statusEl: 'llmKeyYandexgptStatus' },
+        { name: 'YandexGPT Folder', field: 'yandexgpt_folder_id', statusEl: 'llmKeyYandexgptFolderStatus' },
+        { name: 'Gemini', field: 'gemini_api_key', statusEl: 'llmKeyGeminiStatus' },
+        { name: 'GigaChat', field: 'gigachat_api_key', statusEl: 'llmKeyGigachatStatus' },
+    ];
+
+    var html = '<div style="display:flex;gap:12px;flex-wrap:wrap;">';
+    keys.forEach(function(k) {
+        var configured = creds[k.field];
+        html += '<span class="badge ' + (configured ? 'badge-active' : 'badge-inactive') + '">' + k.name + ': ' + (configured ? 'Configured' : 'Not set') + '</span>';
+        var hintEl = document.getElementById(k.statusEl);
+        if (hintEl) hintEl.textContent = configured ? 'Currently configured. Leave blank to keep.' : '';
+    });
+    html += '</div>';
+    statusEl.innerHTML = html;
+}
+
+function renderProjects(projects) {
+    var container = document.getElementById('projectsList');
+    if (!projects || projects.length === 0) {
+        container.innerHTML = '';
+        return;
+    }
+
+    var html = '';
+    projects.forEach(function(p) {
+        html += '<div class="card" id="proj-' + p.id + '">';
+        html += '<div class="card-header"><h2>' + p.name + ' <span class="domain-label">' + (p.domain || '') + '</span>';
+        if (p.track_llm) html += ' <span class="badge" style="background:var(--accent);color:#fff;">LLM</span>';
+        html += '</h2>';
+        html += '<div><button class="btn btn-sm" onclick="toggleEdit(' + p.id + ')">Edit</button> ';
+        html += '<button class="btn btn-sm btn-danger" onclick="deleteProject(' + p.id + ', \'' + p.name + '\')">Delete</button></div></div>';
+
+        // Edit form
+        html += '<div id="edit-' + p.id + '" class="edit-form" style="display:none;">';
+        html += '<form onsubmit="saveProject(event, ' + p.id + ')" class="form-grid">';
+        html += '<div class="form-group"><label>Name</label><input type="text" id="editName-' + p.id + '" value="' + p.name + '" required></div>';
+        html += '<div class="form-group"><label>Domain</label><input type="text" id="editDomain-' + p.id + '" value="' + (p.domain || '') + '" required></div>';
+        html += '<div class="form-group"><label>Search Engine</label><select id="editEngine-' + p.id + '">';
+        ['both', 'google', 'yandex'].forEach(function(e) {
+            html += '<option value="' + e + '"' + (p.search_engine === e ? ' selected' : '') + '>' + e.charAt(0).toUpperCase() + e.slice(1) + '</option>';
+        });
+        html += '</select></div>';
+        html += '<div class="form-group"><label>Google Region</label><select id="editRegionGoogle-' + p.id + '"><option value="">-- Not set --</option></select></div>';
+        html += '<div class="form-group"><label>Yandex Region</label><select id="editRegionYandex-' + p.id + '"><option value="213">Loading...</option></select></div>';
+        html += '<div class="form-group"><label>YWM Host ID</label><input type="text" id="editYwm-' + p.id + '" value="' + (p.ywm_host_id || '') + '"></div>';
+        html += '<div class="form-group"><label>GSC Site URL</label><input type="text" id="editGsc-' + p.id + '" value="' + (p.gsc_site_url || '') + '"></div>';
+        html += '<div class="form-group"><label>Brand Name</label><input type="text" id="editBrand-' + p.id + '" value="' + (p.brand_name || '') + '"></div>';
+        html += '<div class="form-group"><label><input type="checkbox" id="editTrackLlm-' + p.id + '"' + (p.track_llm ? ' checked' : '') + '> Track LLM Visibility</label></div>';
+
+        // LLM Providers checkboxes
+        var providers = p.llm_providers || [];
+        html += '<div class="form-group" id="editLlmProviders-' + p.id + '" style="' + (p.track_llm ? '' : 'display:none;') + '">';
+        html += '<label>LLM Providers</label><div class="checkbox-group">';
+        ['chatgpt', 'deepseek', 'perplexity', 'yandexgpt', 'gemini', 'gigachat'].forEach(function(prov) {
+            html += '<label><input type="checkbox" class="editProv-' + p.id + '" value="' + prov + '"' + (providers.indexOf(prov) !== -1 ? ' checked' : '') + '> ' + prov.charAt(0).toUpperCase() + prov.slice(1) + '</label>';
+        });
+        html += '</div></div>';
+
+        html += '<div class="form-group"><label><input type="checkbox" id="editActive-' + p.id + '"' + (p.is_active ? ' checked' : '') + '> Active</label></div>';
+        html += '<div class="form-actions"><button type="submit" class="btn btn-primary">Save</button></div>';
+        html += '</form></div>';
+
+        // Keywords section
+        html += '<div class="keywords-section" id="kwSection-' + p.id + '"><h3>Keywords</h3>';
+        html += '<div id="kwList-' + p.id + '">Loading...</div>';
+        html += '<form onsubmit="addKeywords(event, ' + p.id + ')" class="add-keywords-form">';
+        html += '<textarea id="kwText-' + p.id + '" rows="4" placeholder="Enter keywords, one per line..."></textarea>';
+        html += '<button type="submit" class="btn btn-sm">Add Keywords</button></form></div>';
+
+        html += '</div>';
+    });
+    container.innerHTML = html;
+
+    // Populate region dropdowns + wire up track_llm toggles
+    projects.forEach(function(p) {
+        populateRegionSelect('editRegionGoogle-' + p.id, regionsData.google, p.region_google || '', false);
+        populateRegionSelect('editRegionYandex-' + p.id, regionsData.yandex, p.region_yandex || 213, true);
+
+        // Wire track_llm checkbox toggle
+        var cb = document.getElementById('editTrackLlm-' + p.id);
+        if (cb) {
+            cb.addEventListener('change', function() {
+                document.getElementById('editLlmProviders-' + p.id).style.display = this.checked ? '' : 'none';
+            });
+        }
+    });
+
+    // Load keywords for each project
+    projects.forEach(function(p) { loadProjectKeywords(p.id); });
+}
+
+async function loadProjectKeywords(projectId) {
+    var resp = await apiFetch('/api/v1/projects/' + projectId + '/keywords/?limit=1000');
+    if (!resp) return;
+    var data = await resp.json();
+    var container = document.getElementById('kwList-' + projectId);
+
+    if (!data.items || data.items.length === 0) {
+        container.innerHTML = '<p class="muted">No keywords yet.</p>';
+        return;
+    }
+
+    var section = document.getElementById('kwSection-' + projectId);
+    var h3 = section.querySelector('h3');
+    h3.textContent = 'Keywords (' + data.total + ')';
+
+    var html = '<div class="keyword-list">';
+    data.items.forEach(function(kw) {
+        html += '<div class="keyword-item">';
+        html += '<code>' + kw.keyword + '</code>';
+        if (kw.target_url) html += '<span class="muted">' + (kw.target_url.length > 40 ? kw.target_url.substring(0, 40) + '...' : kw.target_url) + '</span>';
+        html += '<button class="btn-icon" onclick="deleteKeyword(' + projectId + ', ' + kw.id + ')" title="Delete">x</button>';
+        html += '</div>';
+    });
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+/* ---- Actions ---- */
+async function addProject(e) {
+    e.preventDefault();
+    var trackLlm = document.getElementById('newProjTrackLlm').checked;
+    var llmProviders = [];
+    if (trackLlm) {
+        document.querySelectorAll('#newProjLlmProviders input[type="checkbox"]:checked').forEach(function(cb) {
+            llmProviders.push(cb.value);
+        });
+    }
+    var body = {
+        name: document.getElementById('newProjName').value,
+        domain: document.getElementById('newProjDomain').value,
+        search_engine: document.getElementById('newProjEngine').value,
+        region_google: document.getElementById('newProjRegionGoogle').value || null,
+        region_yandex: parseInt(document.getElementById('newProjRegionYandex').value) || 213,
+        ywm_host_id: document.getElementById('newProjYwm').value || null,
+        gsc_site_url: document.getElementById('newProjGsc').value || null,
+        brand_name: document.getElementById('newProjBrand').value || null,
+        track_llm: trackLlm,
+        llm_providers: llmProviders.length > 0 ? llmProviders : null,
+    };
+    var resp = await apiFetch('/api/v1/projects/', { method: 'POST', body: JSON.stringify(body) });
+    if (resp && resp.ok) {
+        showFlash('Project created');
+        loadSettings();
+    } else if (resp) {
+        var err = await resp.json();
+        showFlash(err.detail || 'Failed to create project', 'error');
+    }
+}
+
+function toggleEdit(projectId) {
+    var el = document.getElementById('edit-' + projectId);
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function saveProject(e, projectId) {
+    e.preventDefault();
+    var trackLlm = document.getElementById('editTrackLlm-' + projectId).checked;
+    var llmProviders = [];
+    document.querySelectorAll('.editProv-' + projectId + ':checked').forEach(function(cb) {
+        llmProviders.push(cb.value);
+    });
+    var body = {
+        name: document.getElementById('editName-' + projectId).value,
+        domain: document.getElementById('editDomain-' + projectId).value,
+        search_engine: document.getElementById('editEngine-' + projectId).value,
+        region_google: document.getElementById('editRegionGoogle-' + projectId).value || null,
+        region_yandex: parseInt(document.getElementById('editRegionYandex-' + projectId).value) || 213,
+        ywm_host_id: document.getElementById('editYwm-' + projectId).value || null,
+        gsc_site_url: document.getElementById('editGsc-' + projectId).value || null,
+        brand_name: document.getElementById('editBrand-' + projectId).value || null,
+        track_llm: trackLlm,
+        llm_providers: llmProviders.length > 0 ? llmProviders : [],
+        is_active: document.getElementById('editActive-' + projectId).checked,
+    };
+    var resp = await apiFetch('/api/v1/projects/' + projectId, { method: 'PUT', body: JSON.stringify(body) });
+    if (resp && resp.ok) {
+        showFlash('Project updated');
+        loadSettings();
+    } else if (resp) {
+        var err = await resp.json();
+        showFlash(err.detail || 'Failed to update', 'error');
+    }
+}
+
+async function deleteProject(projectId, name) {
+    if (!confirm('Delete project ' + name + '?')) return;
+    var resp = await apiFetch('/api/v1/projects/' + projectId, { method: 'DELETE' });
+    if (resp && (resp.ok || resp.status === 204)) {
+        showFlash('Project deleted');
+        loadSettings();
+    }
+}
+
+async function addKeywords(e, projectId) {
+    e.preventDefault();
+    var text = document.getElementById('kwText-' + projectId).value.trim();
+    if (!text) return;
+    var lines = text.split('\n').map(function(l) { return l.trim(); }).filter(function(l) { return l; });
+    var keywords = lines.map(function(l) { return { keyword: l }; });
+
+    var resp = await apiFetch('/api/v1/projects/' + projectId + '/keywords/', {
+        method: 'POST',
+        body: JSON.stringify({ keywords: keywords }),
+    });
+    if (resp && resp.ok) {
+        var data = await resp.json();
+        showFlash('Added ' + data.created + ' keywords' + (data.skipped ? ', ' + data.skipped + ' skipped' : ''));
+        document.getElementById('kwText-' + projectId).value = '';
+        loadProjectKeywords(projectId);
+    }
+}
+
+async function deleteKeyword(projectId, keywordId) {
+    if (!confirm('Delete keyword?')) return;
+    var resp = await apiFetch('/api/v1/projects/' + projectId + '/keywords/' + keywordId, { method: 'DELETE' });
+    if (resp && (resp.ok || resp.status === 204)) {
+        loadProjectKeywords(projectId);
+    }
+}
+
+/* ---- Data Source Keys ---- */
+async function saveDataKeys(e) {
+    e.preventDefault();
+    var body = {};
+    var jm = document.getElementById('dataKeyJm').value;
+    var ywm = document.getElementById('dataKeyYwm').value;
+    var ywmHost = document.getElementById('dataKeyYwmHost').value;
+    var gsc = document.getElementById('dataKeyGsc').value;
+    var tgBot = document.getElementById('dataKeyTgBot').value;
+    var tgChat = document.getElementById('dataKeyTgChat').value;
+
+    if (jm) body.justmagic_api_key = jm;
+    if (ywm) body.ywm_token = ywm;
+    if (ywmHost) body.ywm_host_id = ywmHost;
+    if (gsc) {
+        try { JSON.parse(gsc); } catch (e) {
+            showFlash('GSC credentials must be valid JSON', 'error');
+            return;
+        }
+        body.gsc_credentials_json = gsc;
+    }
+    if (tgBot) body.telegram_bot_token = tgBot;
+    if (tgChat) body.telegram_chat_id = tgChat;
+
+    if (Object.keys(body).length === 0) {
+        showFlash('No keys to update', 'warning');
+        return;
+    }
+
+    var resp = await apiFetch('/api/v1/settings/credentials', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+    });
+    if (resp && resp.ok) {
+        showFlash('Data source keys updated');
+        var creds = await resp.json();
+        renderCredentialsStatus(creds);
+        document.getElementById('dataKeyJm').value = '';
+        document.getElementById('dataKeyYwm').value = '';
+        document.getElementById('dataKeyYwmHost').value = '';
+        document.getElementById('dataKeyGsc').value = '';
+        document.getElementById('dataKeyTgBot').value = '';
+        document.getElementById('dataKeyTgChat').value = '';
+    } else if (resp) {
+        var err = await resp.json();
+        showFlash(err.detail || 'Failed to update keys', 'error');
+    }
+}
+
+/* ---- LLM API Keys ---- */
+async function saveLlmKeys(e) {
+    e.preventDefault();
+    var body = {};
+    var openai = document.getElementById('llmKeyOpenai').value;
+    var deepseek = document.getElementById('llmKeyDeepseek').value;
+    var perplexity = document.getElementById('llmKeyPerplexity').value;
+    var yandexgpt = document.getElementById('llmKeyYandexgpt').value;
+    var yandexgptFolder = document.getElementById('llmKeyYandexgptFolder').value;
+    var gemini = document.getElementById('llmKeyGemini').value;
+    var gigachat = document.getElementById('llmKeyGigachat').value;
+
+    if (openai) body.openai_api_key = openai;
+    if (deepseek) body.deepseek_api_key = deepseek;
+    if (perplexity) body.perplexity_api_key = perplexity;
+    if (yandexgpt) body.yandexgpt_api_key = yandexgpt;
+    if (yandexgptFolder) body.yandexgpt_folder_id = yandexgptFolder;
+    if (gemini) body.gemini_api_key = gemini;
+    if (gigachat) body.gigachat_api_key = gigachat;
+
+    if (Object.keys(body).length === 0) {
+        showFlash('No keys to update', 'warning');
+        return;
+    }
+
+    var resp = await apiFetch('/api/v1/settings/credentials', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+    });
+    if (resp && resp.ok) {
+        showFlash('LLM API keys updated');
+        var creds = await resp.json();
+        renderCredentialsStatus(creds);
+        document.getElementById('llmKeyOpenai').value = '';
+        document.getElementById('llmKeyDeepseek').value = '';
+        document.getElementById('llmKeyPerplexity').value = '';
+        document.getElementById('llmKeyYandexgpt').value = '';
+        document.getElementById('llmKeyYandexgptFolder').value = '';
+        document.getElementById('llmKeyGemini').value = '';
+        document.getElementById('llmKeyGigachat').value = '';
+    } else if (resp) {
+        var err = await resp.json();
+        showFlash(err.detail || 'Failed to update keys', 'error');
+    }
+}
+
+async function updateSchedule(e) {
+    e.preventDefault();
+    var body = {
+        collection_hour: parseInt(document.getElementById('scheduleHour').value),
+        collection_minute: parseInt(document.getElementById('scheduleMinute').value),
+    };
+    var resp = await apiFetch('/api/v1/settings/schedule', { method: 'PUT', body: JSON.stringify(body) });
+    if (resp && resp.ok) {
+        showFlash('Schedule updated');
+    } else if (resp) {
+        var err = await resp.json();
+        showFlash(err.detail || 'Failed to update schedule', 'error');
+    }
+}
+
+document.addEventListener('DOMContentLoaded', loadSettings);
+</script>
+{% endblock %}
